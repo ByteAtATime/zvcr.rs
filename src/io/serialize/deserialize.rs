@@ -2,7 +2,7 @@ use crate::File;
 use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
-use crate::io::file_location::RegionLocation;
+use crate::io::file_location::{RegionLocation, EXTENSION};
 use crate::io::serialize::context::Context;
 use crate::region::paletted_delta_data::*;
 use crate::region::segment::*;
@@ -383,7 +383,7 @@ impl ReadHandle {
     }
 
     pub fn deserialize_file(&mut self) -> Result<File, ReadError> {
-        self.validate_file_prefix("zvcr3d")?;
+        self.validate_file_prefix(EXTENSION)?;
         let version = self.deserialize_version(ZVCR3D_LATEST_VERSION)?;
         let dimension_type = self.deserialize_dimension_type()?;
         let protocol_version = self.read_u16()?;

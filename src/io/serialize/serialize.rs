@@ -1,7 +1,7 @@
 use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::*;
-use crate::io::file_location::RegionLocation;
+use crate::io::file_location::{RegionLocation, EXTENSION};
 use crate::io::serialize::context::Context;
 use crate::region::paletted_delta_data::*;
 use crate::region::segment::*;
@@ -32,6 +32,8 @@ fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
     buf.extend_from_slice(v);
 }
 
+pub const DEFAULT_PROTOCOL_VERSION: u16 = 769;
+
 #[derive(Debug, Clone)]
 pub struct File {
     pub version: Version,
@@ -44,9 +46,9 @@ impl Default for File {
     fn default() -> Self {
         Self {
             version: ZVCR3D_LATEST_VERSION,
-            protocol_version: 769,
+            protocol_version: DEFAULT_PROTOCOL_VERSION,
             dimension_type: DimensionType::Overworld,
-            region: Region::new(769),
+            region: Region::new(DEFAULT_PROTOCOL_VERSION),
         }
     }
 }
@@ -224,7 +226,7 @@ impl WriteHandle {
 
     pub fn serialize_file(&mut self, file: &File) -> Result<(), String> {
         self.ctx.initialize_section_count(file.dimension_type);
-        put_bytes(&mut self.data, b"zvcr3d");
+        put_bytes(&mut self.data, EXTENSION.as_bytes());
         put_u8(&mut self.data, ZVCR3D_LATEST_VERSION as u8);
         put_u8(&mut self.data, file.dimension_type as u8);
         put_u16_le(&mut self.data, file.protocol_version);
