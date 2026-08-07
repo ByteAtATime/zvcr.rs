@@ -31,20 +31,16 @@ impl<const UNPACKED_SIZE: usize> DeltaSections<UNPACKED_SIZE> {
 
     pub fn latest_snapshot(
         &self,
-        get_earliest_timestamp: Option<&mut i64>,
-    ) -> Option<Vec<UnpackedData<UNPACKED_SIZE>>> {
+    ) -> Option<(Vec<UnpackedData<UNPACKED_SIZE>>, i64)> {
         let mut snapshots = Vec::with_capacity(self.section_count);
-        let mut earliest = get_earliest_timestamp;
+        let mut earliest = i64::MAX;
 
         for i in 0..self.section_count {
             let latest = self.sections[i].latest_snapshot()?;
-            if let Some(ref mut e) = earliest
-                && latest.timestamp < **e {
-                    **e = latest.timestamp;
-                }
+            earliest = earliest.min(latest.timestamp);
             snapshots.push(latest.data.unpack());
         }
-        Some(snapshots)
+        Some((snapshots, earliest))
     }
 
     pub fn update_sections(&mut self, section_updates: &[PackedSnapshot<UNPACKED_SIZE>]) -> usize {

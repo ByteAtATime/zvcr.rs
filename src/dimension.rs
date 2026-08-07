@@ -26,7 +26,7 @@ impl DimensionType {
         }
     }
 
-    pub fn properties(&self) -> DimensionProperties {
+    pub fn properties(self) -> DimensionProperties {
         match self {
             Self::Overworld => DimensionProperties {
                 has_sky_light: true,
@@ -46,7 +46,7 @@ impl DimensionType {
         }
     }
 
-    pub fn name(&self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Overworld => "overworld",
             Self::Nether => "nether",
@@ -54,11 +54,11 @@ impl DimensionType {
         }
     }
 
-    pub fn min_section_y(&self) -> i32 {
+    pub fn min_section_y(self) -> i32 {
         self.properties().min_y / SEGMENT_SIDELENGTH_BLOCKS as i32
     }
 
-    pub fn section_count(&self) -> usize {
+    pub fn section_count(self) -> usize {
         self.properties().height as usize / SEGMENT_SIDELENGTH_BLOCKS
     }
 }
