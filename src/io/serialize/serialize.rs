@@ -77,21 +77,21 @@ impl WriteHandle {
         }
     }
 
-    pub fn serialize_palette_table(&mut self, table: &PaletteTable) {
+    pub fn serialize_palette_table(table: &PaletteTable, buf: &mut Vec<u8>) {
         let mut ordered = vec![DIRECT_PALETTE; table.len()];
         for (palette, &index) in table {
             ordered[index] = palette.clone();
         }
 
-        put_u32_le(&mut self.data, ordered.len() as u32);
+        put_u32_le(buf, ordered.len() as u32);
         for palette in &ordered {
             let len = palette.length();
             if palette.direct() || len == 1 {
                 continue;
             }
-            put_u16_le(&mut self.data, len as u16);
+            put_u16_le(buf, len as u16);
             for &atom in &palette.palette {
-                put_u16_le(&mut self.data, atom);
+                put_u16_le(buf, atom);
             }
         }
     }
@@ -196,12 +196,6 @@ impl WriteHandle {
     }
 
     pub fn serialize_region(&mut self, region: &Region) -> Result<(), String> {
-        // Bytes already in `self.data` form the uncompressed file header
-        // ("zvcr3d" + version + dimension + protocol version). The header must
-        // remain uncompressed; only the region body that follows is zstd-
-        // compressed. Capture the boundary so we never compress the header.
-        let header_len = self.data.len();
-
         let mut inner_handle = WriteHandle::new(
             self.ctx.protocol_version,
             self.compression_level,
@@ -218,17 +212,13 @@ impl WriteHandle {
             }
         }
 
-        self.serialize_palette_table(&inner_handle.block_palette_table);
-        self.serialize_palette_table(&inner_handle.biome_palette_table);
-        put_bytes(&mut self.data, &inner_handle.data);
+        let mut body = Vec::with_capacity(inner_handle.data.len());
+        Self::serialize_palette_table(&inner_handle.block_palette_table, &mut body);
+        Self::serialize_palette_table(&inner_handle.biome_palette_table, &mut body);
+        put_bytes(&mut body, &inner_handle.data);
 
-        // Compress only the region body, leaving the header untouched.
-        let body = self.data[header_len..].to_vec();
-        let compressed =
-            compress_zstd(&body, self.compression_level, self.compression_threads)?;
-
-        self.data.truncate(header_len);
-        self.data.extend_from_slice(&compressed);
+        let compressed = compress_zstd(&body, self.compression_level, self.compression_threads)?;
+        put_bytes(&mut self.data, &compressed);
         Ok(())
     }
 
