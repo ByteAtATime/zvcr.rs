@@ -46,7 +46,6 @@ pub enum ReadError {
 
 pub struct ReadHandle {
     pub ctx: Context,
-    data: Vec<u8>,
     cursor: Cursor<Vec<u8>>,
     max_deltas: usize,
     block_palette_table: Vec<Palette>,
@@ -57,8 +56,7 @@ impl ReadHandle {
     pub fn new(data: Vec<u8>, max_deltas: usize) -> Self {
         Self {
             ctx: Context::default(),
-            data,
-            cursor: Cursor::new(Vec::new()),
+            cursor: Cursor::new(data),
             max_deltas,
             block_palette_table: Vec::new(),
             biome_palette_table: Vec::new(),
@@ -396,11 +394,10 @@ impl ReadHandle {
         self.ctx.protocol_version = protocol_version;
 
         let cur_pos = self.cursor.position() as usize;
-        let compressed_slice = &self.data[cur_pos..];
+        let compressed_slice = &self.cursor.get_ref()[cur_pos..];
         let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
 
-        let mut region_handle = ReadHandle::new(uncompressed.clone(), self.max_deltas);
-        region_handle.cursor = Cursor::new(uncompressed);
+        let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
         region_handle.ctx = self.ctx.clone();
 
         let mut file = File {
@@ -417,8 +414,7 @@ impl ReadHandle {
 
 pub fn read_file(filepath: &Path, max_deltas: usize) -> Result<File, ReadError> {
     let buffer = fs::read(filepath).map_err(|e| ReadError::FileNotFound(e.to_string()))?;
-    let mut handle = ReadHandle::new(buffer.clone(), max_deltas);
-    handle.cursor = Cursor::new(buffer);
+    let mut handle = ReadHandle::new(buffer, max_deltas);
     handle.deserialize_file()
 }
 
