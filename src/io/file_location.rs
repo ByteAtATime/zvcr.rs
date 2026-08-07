@@ -7,11 +7,7 @@ pub const ZVCR_REGION_PREFIX: &str = "r.";
 pub const EXTENSION: &str = "zvcr3d";
 
 pub fn floor_div_sector(rc: i32) -> i32 {
-    if rc >= 0 {
-        rc / SECTOR_SIDELENGTH
-    } else {
-        (rc - SECTOR_SIDELENGTH + 1) / SECTOR_SIDELENGTH
-    }
+    rc.div_euclid(SECTOR_SIDELENGTH)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,12 +43,13 @@ impl RegionLocation {
 
     pub fn from_file_name(dimension: DimensionType, file_path: &Path) -> Option<Self> {
         let filename = file_path.file_name()?.to_str()?;
-        if !filename.starts_with(ZVCR_REGION_PREFIX) || !filename.ends_with(".zvcr3d") {
+        let dotted_extension = format!(".{EXTENSION}");
+        if !filename.starts_with(ZVCR_REGION_PREFIX) || !filename.ends_with(&dotted_extension) {
             return None;
         }
 
         let start = ZVCR_REGION_PREFIX.len();
-        let end = filename.len() - 7;
+        let end = filename.len() - (EXTENSION.len() + 1);
         let identifier = &filename[start..end];
         let mut parts = identifier.split('.');
 
