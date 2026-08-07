@@ -94,25 +94,15 @@ mod tests {
         assert_eq!(loc.rx, 5);
         assert_eq!(loc.rz, 7);
 
-        assert!(RegionLocation::from_file_name(
-            dim,
-            std::path::Path::new("r.-1.-1.zvcr3d")
-        )
-        .is_some());
-        assert!(RegionLocation::from_file_name(
-            dim,
-            std::path::Path::new("notregion.zvcr3d")
-        )
-        .is_none());
-        assert!(RegionLocation::from_file_name(
-            dim,
-            std::path::Path::new("r.-1.-1.txt")
-        )
-        .is_none());
-        assert!(RegionLocation::from_file_name(
-            dim,
-            std::path::Path::new("r.abc.-1.zvcr3d")
-        )
-        .is_none());
+        assert!(
+            RegionLocation::from_file_name(dim, std::path::Path::new("r.-1.-1.zvcr3d")).is_some()
+        );
+        assert!(
+            RegionLocation::from_file_name(dim, std::path::Path::new("notregion.zvcr3d")).is_none()
+        );
+        assert!(RegionLocation::from_file_name(dim, std::path::Path::new("r.-1.-1.txt")).is_none());
+        assert!(
+            RegionLocation::from_file_name(dim, std::path::Path::new("r.abc.-1.zvcr3d")).is_none()
+        );
     }
 }

@@ -1,9 +1,9 @@
-use crate::io::serialize::serialize::File;
 use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
-use crate::io::file_location::{RegionLocation, EXTENSION};
+use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
+use crate::io::serialize::serialize::File;
 use crate::region::paletted_delta_data::*;
 use crate::region::segment::*;
 use crate::region::segment_info::*;

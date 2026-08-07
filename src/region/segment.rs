@@ -29,9 +29,7 @@ impl<const UNPACKED_SIZE: usize> DeltaSections<UNPACKED_SIZE> {
         Some(snapshots)
     }
 
-    pub fn latest_snapshot(
-        &self,
-    ) -> Option<(Vec<UnpackedData<UNPACKED_SIZE>>, i64)> {
+    pub fn latest_snapshot(&self) -> Option<(Vec<UnpackedData<UNPACKED_SIZE>>, i64)> {
         let mut snapshots = Vec::with_capacity(self.section_count);
         let mut earliest = i64::MAX;
 

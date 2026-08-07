@@ -63,10 +63,11 @@ impl SegmentInfo {
 
     pub fn insert_snapshot(&mut self, new_state: SegmentState) -> bool {
         if let Some(latest) = self.latest_snapshot()
-            && (new_state.timestamp <= latest.timestamp || latest.state_type == new_state.state_type)
-            {
-                return false;
-            }
+            && (new_state.timestamp <= latest.timestamp
+                || latest.state_type == new_state.state_type)
+        {
+            return false;
+        }
         self.segment_states.insert(0, new_state);
         true
     }

@@ -139,9 +139,10 @@ impl DeltaTileEntityData {
 
             for (pos, delta) in &latest.deltas {
                 if !new_latest.deltas.contains_key(pos)
-                    && let TileEntityDelta::Put(_) = delta {
-                        deltas.deltas.insert(*pos, delta.clone());
-                    }
+                    && let TileEntityDelta::Put(_) = delta
+                {
+                    deltas.deltas.insert(*pos, delta.clone());
+                }
             }
 
             if deltas.deltas.is_empty() {
