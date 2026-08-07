@@ -1,21 +1,7 @@
 use std::time::Instant;
 use zvcr::*;
 
-fn test_palette_packing<const SECTION_SIZE: usize>() {
-    let mut buffer = [0u16; SECTION_SIZE];
-    for i in 0..SECTION_SIZE {
-        buffer[i] = i as u16;
-    }
-
-    let packed = PackedData::<SECTION_SIZE>::pack(&buffer);
-    let unpacked = packed.unpack();
-    assert_eq!(buffer, unpacked);
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    test_palette_packing::<SECTION_SIZE_BLOCKS>();
-    test_palette_packing::<SECTION_SIZE_BIOMES>();
-
     let location = RegionLocation {
         rx: -1,
         rz: -1,
@@ -58,4 +44,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Wrote {bytes_written} bytes");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palette_packing_roundtrip_blocks() {
+        let mut buffer = [0u16; SECTION_SIZE_BLOCKS];
+        for i in 0..SECTION_SIZE_BLOCKS {
+            buffer[i] = i as u16;
+        }
+        let packed = PackedData::<SECTION_SIZE_BLOCKS>::pack(&buffer);
+        assert_eq!(buffer, packed.unpack());
+    }
+
+    #[test]
+    fn palette_packing_roundtrip_biomes() {
+        let mut buffer = [0u16; SECTION_SIZE_BIOMES];
+        for i in 0..SECTION_SIZE_BIOMES {
+            buffer[i] = i as u16;
+        }
+        let packed = PackedData::<SECTION_SIZE_BIOMES>::pack(&buffer);
+        assert_eq!(buffer, packed.unpack());
+    }
+
+    #[test]
+    fn read_succeeds_with_zero_and_one_max_deltas() {
+        let dir = std::path::Path::new("test_files");
+        let location = RegionLocation {
+            rx: -1,
+            rz: -1,
+            dimension_type: DimensionType::Overworld,
+        };
+        let zero = read_file_at(dir, &location, 0);
+        let one = read_file_at(dir, &location, 1);
+        assert!(zero.is_ok(), "max_deltas=0 failed: {:?}", zero.err());
+        assert!(one.is_ok(), "max_deltas=1 failed: {:?}", one.err());
+    }
+
+    #[test]
+    fn from_file_name_parses_valid_and_rejects_invalid() {
+        let dim = DimensionType::Overworld;
+
+        let loc = RegionLocation::from_file_name(dim, std::path::Path::new("r.5.7.zvcr3d"));
+        assert!(loc.is_some());
+        let loc = loc.unwrap();
+        assert_eq!(loc.rx, 5);
+        assert_eq!(loc.rz, 7);
+
+        assert!(RegionLocation::from_file_name(
+            dim,
+            std::path::Path::new("r.-1.-1.zvcr3d")
+        )
+        .is_some());
+        assert!(RegionLocation::from_file_name(
+            dim,
+            std::path::Path::new("notregion.zvcr3d")
+        )
+        .is_none());
+        assert!(RegionLocation::from_file_name(
+            dim,
+            std::path::Path::new("r.-1.-1.txt")
+        )
+        .is_none());
+        assert!(RegionLocation::from_file_name(
+            dim,
+            std::path::Path::new("r.abc.-1.zvcr3d")
+        )
+        .is_none());
+    }
 }
