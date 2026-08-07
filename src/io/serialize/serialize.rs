@@ -126,10 +126,13 @@ impl WriteHandle {
                 if paletted.palette.direct() {
                     put_u32_le(&mut self.data, u32::MAX);
                 } else {
-                    let next_index = palette_table.len();
-                    let idx = *palette_table
-                        .entry(paletted.palette.clone())
-                        .or_insert(next_index);
+                    let idx = if let Some(&existing) = palette_table.get(&paletted.palette) {
+                        existing
+                    } else {
+                        let next_index = palette_table.len();
+                        palette_table.insert(paletted.palette.clone(), next_index);
+                        next_index
+                    };
                     put_u32_le(&mut self.data, idx as u32);
                 }
             }

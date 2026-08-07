@@ -47,8 +47,6 @@ pub struct ReadHandle {
     data: Vec<u8>,
     pos: usize,
     max_deltas: usize,
-    block_palette_table: Vec<Palette>,
-    biome_palette_table: Vec<Palette>,
 }
 
 impl ReadHandle {
@@ -58,8 +56,6 @@ impl ReadHandle {
             data,
             pos: 0,
             max_deltas,
-            block_palette_table: Vec::new(),
-            biome_palette_table: Vec::new(),
         }
     }
 
@@ -182,10 +178,13 @@ impl ReadHandle {
             ));
         }
 
-        let mut packed_longs = vec![0u64; packed_length as usize];
-        for val in packed_longs.iter_mut() {
-            *val = self.read_u64()?;
-        }
+        let byte_len = packed_length as usize * 8;
+        let mut packed_bytes = vec![0u8; byte_len];
+        self.read_exact(&mut packed_bytes)?;
+        let packed_longs: Vec<u64> = packed_bytes
+            .chunks_exact(8)
+            .map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect();
 
         let palette_index = self.read_u32()?;
         let palette = if palette_index == u32::MAX {
@@ -340,21 +339,23 @@ impl ReadHandle {
         Ok(tile_entities)
     }
 
-    pub fn deserialize_segment(&mut self) -> Result<Arc<Segment>, ReadError> {
+    pub fn deserialize_segment(
+        &mut self,
+        block_tables: &[Palette],
+        biome_tables: &[Palette],
+    ) -> Result<Arc<Segment>, ReadError> {
         let mut segment = Segment::with_section_count(self.ctx.section_count);
-        let block_tables = self.block_palette_table.clone();
-        let biome_tables = self.biome_palette_table.clone();
 
         for i in 0..self.ctx.section_count {
             self.deserialize_packed_delta_data(
                 &mut segment.block_sections.sections[i],
-                &block_tables,
+                block_tables,
             )?;
         }
         for i in 0..self.ctx.section_count {
             self.deserialize_packed_delta_data(
                 &mut segment.biome_sections.sections[i],
-                &biome_tables,
+                biome_tables,
             )?;
         }
 
@@ -370,13 +371,10 @@ impl ReadHandle {
         self.deserialize_palette_table(&mut block_table)?;
         self.deserialize_palette_table(&mut biome_table)?;
 
-        self.block_palette_table = block_table;
-        self.biome_palette_table = biome_table;
-
         for i in 0..SEGMENTS_PER_REGION {
             let indicator = self.read_u8()?;
             if indicator != 0 {
-                region.segments[i] = Some(self.deserialize_segment()?);
+                region.segments[i] = Some(self.deserialize_segment(&block_table, &biome_table)?);
             }
         }
         Ok(())
