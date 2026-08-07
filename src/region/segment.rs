@@ -90,14 +90,14 @@ pub type SegmentMaybe = Option<Arc<Segment>>;
 
 #[derive(Debug, Clone)]
 pub struct Region {
-    pub segments: Vec<SegmentMaybe>,
+    pub segments: [SegmentMaybe; SEGMENTS_PER_REGION],
     pub protocol_version: u16,
 }
 
 impl Region {
     pub fn new(protocol_version: u16) -> Self {
         Self {
-            segments: vec![None; SEGMENTS_PER_REGION],
+            segments: std::array::from_fn(|_| None),
             protocol_version,
         }
     }
