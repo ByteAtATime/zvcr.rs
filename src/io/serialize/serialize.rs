@@ -9,10 +9,28 @@ use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use crate::version::*;
 use ahash::AHashMap;
-use byteorder::{LittleEndian, WriteBytesExt};
 use std::fs;
-use std::io::Write;
 use std::path::Path;
+
+fn put_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+}
+
+fn put_u16_le(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_u32_le(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_u64_le(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
+    buf.extend_from_slice(v);
+}
 
 #[derive(Debug, Clone)]
 pub struct File {
@@ -65,17 +83,15 @@ impl WriteHandle {
             ordered[index] = palette.clone();
         }
 
-        self.data
-            .write_u32::<LittleEndian>(ordered.len() as u32)
-            .unwrap();
+        put_u32_le(&mut self.data, ordered.len() as u32);
         for palette in &ordered {
             let len = palette.length();
             if palette.direct() || len == 1 {
                 continue;
             }
-            self.data.write_u16::<LittleEndian>(len as u16).unwrap();
+            put_u16_le(&mut self.data, len as u16);
             for &atom in &palette.palette {
-                self.data.write_u16::<LittleEndian>(atom).unwrap();
+                put_u16_le(&mut self.data, atom);
             }
         }
     }
@@ -85,22 +101,18 @@ impl WriteHandle {
         snapshot: &PackedSnapshot<UNPACKED_SIZE>,
         is_block: bool,
     ) {
-        self.data
-            .write_u64::<LittleEndian>(snapshot.timestamp as u64)
-            .unwrap();
+        put_u64_le(&mut self.data, snapshot.timestamp as u64);
         match &snapshot.data.data {
             Data::Single(val) => {
-                self.data.write_u8(0).unwrap();
-                self.data.write_u16::<LittleEndian>(*val).unwrap();
+                put_u8(&mut self.data, 0);
+                put_u16_le(&mut self.data, *val);
             }
             Data::Paletted(paletted) => {
-                self.data.write_u8(1).unwrap();
+                put_u8(&mut self.data, 1);
                 let packed_len = paletted.packed_long_array.len();
-                self.data
-                    .write_u64::<LittleEndian>(packed_len as u64)
-                    .unwrap();
+                put_u64_le(&mut self.data, packed_len as u64);
                 for &val in &paletted.packed_long_array {
-                    self.data.write_u64::<LittleEndian>(val).unwrap();
+                    put_u64_le(&mut self.data, val);
                 }
 
                 let palette_table = if is_block {
@@ -110,13 +122,13 @@ impl WriteHandle {
                 };
 
                 if paletted.palette.direct() {
-                    self.data.write_u32::<LittleEndian>(u32::MAX).unwrap();
+                    put_u32_le(&mut self.data, u32::MAX);
                 } else {
                     let next_index = palette_table.len();
                     let idx = *palette_table
                         .entry(paletted.palette.clone())
                         .or_insert(next_index);
-                    self.data.write_u32::<LittleEndian>(idx as u32).unwrap();
+                    put_u32_le(&mut self.data, idx as u32);
                 }
             }
         }
@@ -127,59 +139,45 @@ impl WriteHandle {
         delta_data: &PackedDeltaData<UNPACKED_SIZE>,
         is_block: bool,
     ) {
-        self.data
-            .write_u64::<LittleEndian>(delta_data.reverse_deltas.len() as u64)
-            .unwrap();
+        put_u64_le(&mut self.data, delta_data.reverse_deltas.len() as u64);
         for snapshot in &delta_data.reverse_deltas {
             self.serialize_packed_snapshot(snapshot, is_block);
         }
     }
 
     pub fn serialize_segment_state(&mut self, state: &SegmentState) {
-        self.data.write_u8(state.state_type as u8).unwrap();
-        self.data
-            .write_u64::<LittleEndian>(state.timestamp as u64)
-            .unwrap();
+        put_u8(&mut self.data, state.state_type as u8);
+        put_u64_le(&mut self.data, state.timestamp as u64);
     }
 
     pub fn serialize_segment_info(&mut self, info: &SegmentInfo) {
-        self.data
-            .write_u64::<LittleEndian>(info.segment_states.len() as u64)
-            .unwrap();
+        put_u64_le(&mut self.data, info.segment_states.len() as u64);
         for state in &info.segment_states {
             self.serialize_segment_state(state);
         }
     }
 
     pub fn serialize_tile_entities(&mut self, tile_entities: &DeltaTileEntityData) {
-        self.data
-            .write_u64::<LittleEndian>(tile_entities.reverse_deltas.len() as u64)
-            .unwrap();
+        put_u64_le(&mut self.data, tile_entities.reverse_deltas.len() as u64);
         for list_delta in &tile_entities.reverse_deltas {
-            self.data
-                .write_u64::<LittleEndian>(list_delta.timestamp as u64)
-                .unwrap();
-            self.data
-                .write_u64::<LittleEndian>(list_delta.deltas.len() as u64)
-                .unwrap();
+            put_u64_le(&mut self.data, list_delta.timestamp as u64);
+            put_u64_le(&mut self.data, list_delta.deltas.len() as u64);
 
             let mut sorted_positions: Vec<_> = list_delta.deltas.keys().cloned().collect();
             sorted_positions.sort_by_key(|pos| pos.packed());
 
             for pos in sorted_positions {
                 let delta = &list_delta.deltas[&pos];
-                self.data.write_u32::<LittleEndian>(pos.packed()).unwrap();
+                put_u32_le(&mut self.data, pos.packed());
                 match delta {
                     TileEntityDelta::Erase => {
-                        self.data.write_u8(0).unwrap();
+                        put_u8(&mut self.data, 0);
                     }
                     TileEntityDelta::Put(te) => {
-                        self.data.write_u8(1).unwrap();
-                        self.data.write_u32::<LittleEndian>(te.tile_type).unwrap();
-                        self.data
-                            .write_u64::<LittleEndian>(te.nbt.len() as u64)
-                            .unwrap();
-                        self.data.write_all(&te.nbt).unwrap();
+                        put_u8(&mut self.data, 1);
+                        put_u32_le(&mut self.data, te.tile_type);
+                        put_u64_le(&mut self.data, te.nbt.len() as u64);
+                        put_bytes(&mut self.data, &te.nbt);
                     }
                 }
             }
@@ -213,16 +211,16 @@ impl WriteHandle {
 
         for i in 0..SEGMENTS_PER_REGION {
             if let Some(ref seg) = region.segments[i] {
-                inner_handle.data.write_u8(1).unwrap();
+                put_u8(&mut inner_handle.data, 1);
                 inner_handle.serialize_segment(seg);
             } else {
-                inner_handle.data.write_u8(0).unwrap();
+                put_u8(&mut inner_handle.data, 0);
             }
         }
 
         self.serialize_palette_table(&inner_handle.block_palette_table);
         self.serialize_palette_table(&inner_handle.biome_palette_table);
-        self.data.write_all(&inner_handle.data).unwrap();
+        put_bytes(&mut self.data, &inner_handle.data);
 
         // Compress only the region body, leaving the header untouched.
         let body = self.data[header_len..].to_vec();
@@ -236,12 +234,10 @@ impl WriteHandle {
 
     pub fn serialize_file(&mut self, file: &File) -> Result<(), String> {
         self.ctx.initialize_section_count(file.dimension_type);
-        self.data.write_all(b"zvcr3d").unwrap();
-        self.data.write_u8(ZVCR3D_LATEST_VERSION as u8).unwrap();
-        self.data.write_u8(file.dimension_type as u8).unwrap();
-        self.data
-            .write_u16::<LittleEndian>(file.protocol_version)
-            .unwrap();
+        put_bytes(&mut self.data, b"zvcr3d");
+        put_u8(&mut self.data, ZVCR3D_LATEST_VERSION as u8);
+        put_u8(&mut self.data, file.dimension_type as u8);
+        put_u16_le(&mut self.data, file.protocol_version);
 
         self.serialize_region(&file.region)
     }
