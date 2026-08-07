@@ -1,4 +1,4 @@
-use crate::File;
+use crate::io::serialize::serialize::File;
 use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
