@@ -9,9 +9,7 @@ use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use crate::version::*;
-use byteorder::{LittleEndian, ReadBytesExt};
 use std::fs;
-use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -46,7 +44,8 @@ pub enum ReadError {
 
 pub struct ReadHandle {
     pub ctx: Context,
-    cursor: Cursor<Vec<u8>>,
+    data: Vec<u8>,
+    pos: usize,
     max_deltas: usize,
     block_palette_table: Vec<Palette>,
     biome_palette_table: Vec<Palette>,
@@ -56,7 +55,8 @@ impl ReadHandle {
     pub fn new(data: Vec<u8>, max_deltas: usize) -> Self {
         Self {
             ctx: Context::default(),
-            cursor: Cursor::new(data),
+            data,
+            pos: 0,
             max_deltas,
             block_palette_table: Vec::new(),
             biome_palette_table: Vec::new(),
@@ -64,45 +64,43 @@ impl ReadHandle {
     }
 
     pub fn offset(&self) -> usize {
-        self.cursor.position() as usize
+        self.pos
+    }
+
+    fn read_bytes<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
+        if self.pos + N > self.data.len() {
+            return Err(ReadError::OutOfBounds { offset: self.pos });
+        }
+        let mut bytes = [0u8; N];
+        bytes.copy_from_slice(&self.data[self.pos..self.pos + N]);
+        self.pos += N;
+        Ok(bytes)
     }
 
     fn read_u8(&mut self) -> Result<u8, ReadError> {
-        self.cursor.read_u8().map_err(|_| ReadError::OutOfBounds {
-            offset: self.offset(),
-        })
+        Ok(self.read_bytes::<1>()?[0])
     }
 
     fn read_u16(&mut self) -> Result<u16, ReadError> {
-        self.cursor
-            .read_u16::<LittleEndian>()
-            .map_err(|_| ReadError::OutOfBounds {
-                offset: self.offset(),
-            })
+        Ok(u16::from_le_bytes(self.read_bytes::<2>()?))
     }
 
     fn read_u32(&mut self) -> Result<u32, ReadError> {
-        self.cursor
-            .read_u32::<LittleEndian>()
-            .map_err(|_| ReadError::OutOfBounds {
-                offset: self.offset(),
-            })
+        Ok(u32::from_le_bytes(self.read_bytes::<4>()?))
     }
 
     fn read_u64(&mut self) -> Result<u64, ReadError> {
-        self.cursor
-            .read_u64::<LittleEndian>()
-            .map_err(|_| ReadError::OutOfBounds {
-                offset: self.offset(),
-            })
+        Ok(u64::from_le_bytes(self.read_bytes::<8>()?))
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ReadError> {
-        self.cursor
-            .read_exact(buf)
-            .map_err(|_| ReadError::OutOfBounds {
-                offset: self.offset(),
-            })
+        let n = buf.len();
+        if self.pos + n > self.data.len() {
+            return Err(ReadError::OutOfBounds { offset: self.pos });
+        }
+        buf.copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(())
     }
 
     pub fn validate_file_prefix(&mut self, prefix: &str) -> Result<(), ReadError> {
@@ -143,8 +141,7 @@ impl ReadHandle {
             let palette_len = self.read_u16()? as usize;
             if palette_len > MAX_INDIRECT_PALETTE_SIZE {
                 let skip_bytes = palette_len * std::mem::size_of::<SegmentAtom>();
-                self.cursor
-                    .set_position(self.cursor.position() + skip_bytes as u64);
+                self.pos += skip_bytes;
                 table.push(DIRECT_PALETTE);
                 continue;
             }
@@ -243,7 +240,7 @@ impl ReadHandle {
                     let _s = self.read_u16()?;
                 } else {
                     let plen = self.read_u64()?;
-                    self.cursor.set_position(self.cursor.position() + plen * 8);
+                    self.pos += (plen * 8) as usize;
                     let _pindex = self.read_u32()?;
                 }
                 continue;
@@ -393,8 +390,7 @@ impl ReadHandle {
 
         self.ctx.protocol_version = protocol_version;
 
-        let cur_pos = self.cursor.position() as usize;
-        let compressed_slice = &self.cursor.get_ref()[cur_pos..];
+        let compressed_slice = &self.data[self.pos..];
         let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
 
         let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
