@@ -147,8 +147,8 @@ impl ReadHandle {
             }
 
             let mut palette_vec = vec![0u16; palette_len];
-            for i in 0..palette_len {
-                palette_vec[i] = self.read_u16()?;
+            for atom in palette_vec.iter_mut() {
+                *atom = self.read_u16()?;
             }
             let bpe = bits_per_entry(palette_len);
             table.push(Palette {
@@ -183,8 +183,8 @@ impl ReadHandle {
         }
 
         let mut packed_longs = vec![0u64; packed_length as usize];
-        for i in 0..packed_length as usize {
-            packed_longs[i] = self.read_u64()?;
+        for val in packed_longs.iter_mut() {
+            *val = self.read_u64()?;
         }
 
         let palette_index = self.read_u32()?;

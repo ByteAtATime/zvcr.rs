@@ -53,8 +53,8 @@ mod tests {
     #[test]
     fn palette_packing_roundtrip_blocks() {
         let mut buffer = [0u16; SECTION_SIZE_BLOCKS];
-        for i in 0..SECTION_SIZE_BLOCKS {
-            buffer[i] = i as u16;
+        for (i, slot) in buffer.iter_mut().enumerate() {
+            *slot = i as u16;
         }
         let packed = PackedData::<SECTION_SIZE_BLOCKS>::pack(&buffer);
         assert_eq!(buffer, packed.unpack());
@@ -63,8 +63,8 @@ mod tests {
     #[test]
     fn palette_packing_roundtrip_biomes() {
         let mut buffer = [0u16; SECTION_SIZE_BIOMES];
-        for i in 0..SECTION_SIZE_BIOMES {
-            buffer[i] = i as u16;
+        for (i, slot) in buffer.iter_mut().enumerate() {
+            *slot = i as u16;
         }
         let packed = PackedData::<SECTION_SIZE_BIOMES>::pack(&buffer);
         assert_eq!(buffer, packed.unpack());
