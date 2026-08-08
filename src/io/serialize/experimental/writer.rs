@@ -13,6 +13,7 @@ use crate::version::*;
 use ahash::AHashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 pub(crate) type PaletteTable = AHashMap<Palette, usize>;
 
@@ -144,28 +145,37 @@ impl WriteHandle {
         }
     }
 
-    pub(crate) fn serialize_segment(&mut self, segment: &Segment) {
-        for section in segment.block_sections.active() {
-            self.serialize_packed_delta_data(section, true);
-        }
-        for section in segment.biome_sections.active() {
-            self.serialize_packed_delta_data(section, false);
-        }
-        self.serialize_segment_info(&segment.info);
-        self.serialize_tile_entities(&segment.tile_entities);
-    }
-
     pub(crate) fn serialize_region(&mut self, region: &Region) -> Result<(), String> {
         let mut inner_handle = WriteHandle::new(self.ctx.protocol_version, self.compression_level);
         inner_handle.ctx = self.ctx.clone();
+        let section_count = inner_handle.ctx.section_count;
+
+        let present: Vec<&Arc<Segment>> = region.segments.iter().flatten().collect();
 
         for segment in &region.segments {
-            if let Some(seg) = segment {
-                put_u8(&mut inner_handle.data, 1);
-                inner_handle.serialize_segment(seg);
-            } else {
-                put_u8(&mut inner_handle.data, 0);
+            put_u8(&mut inner_handle.data, if segment.is_some() { 1 } else { 0 });
+        }
+
+        for y in 0..section_count {
+            for segment in &present {
+                inner_handle
+                    .serialize_packed_delta_data(&segment.block_sections.sections[y], true);
             }
+        }
+
+        for y in 0..section_count {
+            for segment in &present {
+                inner_handle
+                    .serialize_packed_delta_data(&segment.biome_sections.sections[y], false);
+            }
+        }
+
+        for segment in &present {
+            inner_handle.serialize_segment_info(&segment.info);
+        }
+
+        for segment in &present {
+            inner_handle.serialize_tile_entities(&segment.tile_entities);
         }
 
         let mut palette_tables = Vec::new();

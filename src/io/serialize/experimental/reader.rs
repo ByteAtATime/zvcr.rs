@@ -300,37 +300,62 @@ impl ReadHandle {
         Ok(tile_entities)
     }
 
-    pub(crate) fn deserialize_segment(
-        &mut self,
-        block_tables: &[Palette],
-        biome_tables: &[Palette],
-    ) -> Result<Arc<Segment>, ReadError> {
-        let mut segment = Segment::with_section_count(self.ctx.section_count);
-
-        for section in segment.block_sections.active_mut() {
-            self.deserialize_packed_delta_data(section, block_tables)?;
-        }
-        for section in segment.biome_sections.active_mut() {
-            self.deserialize_packed_delta_data(section, biome_tables)?;
-        }
-
-        segment.info = self.deserialize_segment_info()?;
-        segment.tile_entities = self.deserialize_tile_entities()?;
-        Ok(Arc::new(segment))
-    }
-
     pub(crate) fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
         let mut block_table = Vec::new();
         let mut biome_table = Vec::new();
-
         self.deserialize_palette_table(&mut block_table)?;
         self.deserialize_palette_table(&mut biome_table)?;
 
-        for segment in region.segments.iter_mut() {
-            let indicator = self.read_u8()?;
-            if indicator != 0 {
-                *segment = Some(self.deserialize_segment(&block_table, &biome_table)?);
+        let mut present = vec![false; SEGMENTS_PER_REGION];
+        for v in present.iter_mut() {
+            *v = self.read_u8()? != 0;
+        }
+
+        let section_count = self.ctx.section_count;
+        let mut segments: Vec<Option<Segment>> = (0..SEGMENTS_PER_REGION).map(|_| None).collect();
+        for i in 0..SEGMENTS_PER_REGION {
+            if present[i] {
+                segments[i] = Some(Segment::with_section_count(section_count));
             }
+        }
+
+        for y in 0..section_count {
+            for i in 0..SEGMENTS_PER_REGION {
+                if present[i] {
+                    let seg = segments[i].as_mut().unwrap();
+                    self.deserialize_packed_delta_data(
+                        &mut seg.block_sections.sections[y],
+                        &block_table,
+                    )?;
+                }
+            }
+        }
+        for y in 0..section_count {
+            for i in 0..SEGMENTS_PER_REGION {
+                if present[i] {
+                    let seg = segments[i].as_mut().unwrap();
+                    self.deserialize_packed_delta_data(
+                        &mut seg.biome_sections.sections[y],
+                        &biome_table,
+                    )?;
+                }
+            }
+        }
+        for i in 0..SEGMENTS_PER_REGION {
+            if present[i] {
+                let seg = segments[i].as_mut().unwrap();
+                seg.info = self.deserialize_segment_info()?;
+            }
+        }
+        for i in 0..SEGMENTS_PER_REGION {
+            if present[i] {
+                let seg = segments[i].as_mut().unwrap();
+                seg.tile_entities = self.deserialize_tile_entities()?;
+            }
+        }
+
+        for i in 0..SEGMENTS_PER_REGION {
+            region.segments[i] = segments[i].take().map(Arc::new);
         }
         Ok(())
     }
