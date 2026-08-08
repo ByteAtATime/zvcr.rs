@@ -17,11 +17,8 @@ pub trait DeltaSequence {
     }
 
     fn snapshot_from(&self, timestamp: i64) -> Option<Self::SnapshotFrom> {
-        let nearest = find_nearest_timestamp(
-            self.reverse_deltas(),
-            Self::snapshot_timestamp,
-            timestamp,
-        );
+        let nearest =
+            find_nearest_timestamp(self.reverse_deltas(), Self::snapshot_timestamp, timestamp);
         self.snapshot_before(nearest)
     }
 }

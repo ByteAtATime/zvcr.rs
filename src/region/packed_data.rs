@@ -1,5 +1,5 @@
 use crate::definitions::*;
-use crate::region::palette::{build_palette, Palette};
+use crate::region::palette::{Palette, build_palette};
 use crate::region::unpacked_view::UnpackedData;
 
 pub type LongArray = Vec<u64>;

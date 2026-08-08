@@ -17,10 +17,6 @@ pub fn compress_zstd(
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), compression_level)
         .map_err(|e| format!("Failed to create ZSTD encoder: {e}"))?;
 
-    // Pledge the exact input size so the emitted frame records its content size.
-    // This is required for byte-stable output: without it the streaming encoder
-    // leaves the frame content size unset (flag = 0), diverging from the
-    // canonical frame layout.
     encoder
         .set_pledged_src_size(Some(input.len() as u64))
         .map_err(|e| format!("Failed to set pledged source size: {e}"))?;

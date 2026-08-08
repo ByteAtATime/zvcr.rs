@@ -5,8 +5,8 @@ use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::file_type::File;
 use crate::io::serialize::context::Context;
 use crate::region::delta::PackedDeltaData;
-use crate::region::packed_data::{Data, PalettedData, PackedData, PackedSnapshot};
-use crate::region::palette::{bits_per_entry, DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette};
+use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
+use crate::region::palette::{DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette, bits_per_entry};
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
@@ -234,7 +234,6 @@ impl ReadHandle {
 
         for delta_index in 0..delta_length as usize {
             if self.max_deltas != 0 && delta_index >= self.max_deltas {
-                // Skip packed snapshot logic
                 let _ts = self.read_u64()?;
                 let dtype = self.read_u8()?;
                 if dtype == 0 {
