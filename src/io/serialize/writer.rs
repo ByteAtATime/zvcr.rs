@@ -218,22 +218,29 @@ impl WriteHandle {
     }
 }
 
-pub fn write_file(
+pub fn serialize_file_to_vec(
     file: &File,
-    filepath: &Path,
     compression_level: i32,
     compression_threads: u32,
-) -> Result<usize, String> {
+) -> Result<Vec<u8>, String> {
     let mut handle = WriteHandle::new(
         file.protocol_version,
         compression_level,
         compression_threads,
     );
     handle.serialize_file(file)?;
+    Ok(handle.data)
+}
 
-    fs::write(filepath, &handle.data).map_err(|e| format!("Failed to write file to disk: {e}"))?;
-
-    Ok(handle.data.len())
+pub fn write_file(
+    file: &File,
+    filepath: &Path,
+    compression_level: i32,
+    compression_threads: u32,
+) -> Result<usize, String> {
+    let bytes = serialize_file_to_vec(file, compression_level, compression_threads)?;
+    fs::write(filepath, &bytes).map_err(|e| format!("Failed to write file to disk: {e}"))?;
+    Ok(bytes.len())
 }
 
 pub fn write_file_at(

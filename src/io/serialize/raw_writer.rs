@@ -1,9 +1,15 @@
-use crate::io::serialize::writer::write_file;
+use crate::io::serialize::writer::serialize_file_to_vec;
 use crate::raw::{RegionData, encode_region};
 use std::path::Path;
 
 pub trait Writer {
-    fn write(&self, data: &RegionData, dst: &Path) -> Result<usize, String>;
+    fn to_bytes(&self, data: &RegionData) -> Result<Vec<u8>, String>;
+
+    fn write(&self, data: &RegionData, dst: &Path) -> Result<usize, String> {
+        let bytes = self.to_bytes(data)?;
+        std::fs::write(dst, &bytes).map_err(|e| format!("Failed to write file to disk: {e}"))?;
+        Ok(bytes.len())
+    }
 }
 
 pub struct ReferenceWriter {
@@ -18,7 +24,7 @@ impl ReferenceWriter {
 }
 
 impl Writer for ReferenceWriter {
-    fn write(&self, data: &RegionData, dst: &Path) -> Result<usize, String> {
-        write_file(&encode_region(data), dst, self.level, self.threads)
+    fn to_bytes(&self, data: &RegionData) -> Result<Vec<u8>, String> {
+        serialize_file_to_vec(&encode_region(data), self.level, self.threads)
     }
 }
