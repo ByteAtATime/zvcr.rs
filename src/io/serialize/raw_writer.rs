@@ -1,4 +1,4 @@
-use crate::io::serialize::writer::serialize_file_to_vec;
+use crate::io::serialize::reference::writer::serialize_file_to_vec;
 use crate::raw::{RegionData, encode_region};
 use std::path::Path;
 

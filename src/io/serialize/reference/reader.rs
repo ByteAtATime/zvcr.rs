@@ -2,7 +2,7 @@ use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
-use crate::io::file_type::File;
+use super::File;
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::region::delta::PackedDeltaData;

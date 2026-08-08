@@ -1,6 +1,6 @@
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
-use crate::io::file_type::File;
+use super::File;
 use crate::io::serialize::context::Context;
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{Data, PackedSnapshot};

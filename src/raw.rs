@@ -2,7 +2,7 @@ use crate::definitions::{
     SECTION_SIZE_BLOCKS, SECTION_SIZE_BIOMES, SEGMENTS_PER_REGION, STATE_UNCHANGED,
 };
 use crate::dimension::DimensionType;
-use crate::io::file_type::File;
+use crate::io::serialize::reference::File;
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{PackedData, PackedSnapshot};
 use crate::region::segment::{Region, Segment};
@@ -189,7 +189,7 @@ mod tests {
     use crate::definitions::SEGMENTS_PER_REGION;
     use crate::dimension::DimensionType;
     use crate::io::file_location::RegionLocation;
-    use crate::io::serialize::reader::read_file_at;
+    use crate::io::serialize::reference::reader::read_file_at;
     use crate::region::delta_sequence::DeltaSequence;
     use crate::write_file;
     use crate::{ZSTD_COMPRESSION_LEVEL_DEFAULT, default_compression_threads};

@@ -1,4 +1,4 @@
-use crate::io::serialize::reader::ReadHandle;
+use crate::io::serialize::reference::reader::ReadHandle;
 use crate::raw::{RegionData, reconstruct_region};
 use std::path::Path;
 
