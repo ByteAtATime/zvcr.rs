@@ -88,6 +88,35 @@ fn unpack_bits<const BITS: u8, const UNPACKED_SIZE: usize>(
     unpacked
 }
 
+#[inline]
+fn merge_bits<const BITS: u8, const UNPACKED_SIZE: usize>(
+    paletted_data: &PalettedData<UNPACKED_SIZE>,
+    grid: &mut UnpackedData<UNPACKED_SIZE>,
+) {
+    let palette = &paletted_data.palette;
+    let direct = palette.direct();
+    let mask = (1u64 << BITS) - 1;
+    let mut unpacked_index = 0;
+
+    for &cell in &paletted_data.packed_long_array {
+        let mut bit_index = 0u8;
+        while bit_index < 64 {
+            if unpacked_index >= UNPACKED_SIZE {
+                break;
+            }
+            let mut slice = (cell >> bit_index) & mask;
+            if !direct {
+                slice = palette.palette[slice as usize] as u64;
+            }
+            if slice as u16 != STATE_UNCHANGED {
+                grid[unpacked_index] = slice as u16;
+            }
+            unpacked_index += 1;
+            bit_index += BITS;
+        }
+    }
+}
+
 impl<const UNPACKED_SIZE: usize> PackedData<UNPACKED_SIZE> {
     pub fn pack(section_data: &UnpackedData<UNPACKED_SIZE>) -> Self {
         let mut scratch = PackScratch::new();
@@ -144,6 +173,23 @@ impl<const UNPACKED_SIZE: usize> PackedData<UNPACKED_SIZE> {
                     4 => unpack_bits::<4, UNPACKED_SIZE>(paletted_data),
                     8 => unpack_bits::<8, UNPACKED_SIZE>(paletted_data),
                     _ => unpack_bits::<16, UNPACKED_SIZE>(paletted_data),
+                }
+            }
+        }
+    }
+
+    pub fn unpack_delta_into(&self, grid: &mut UnpackedData<UNPACKED_SIZE>) {
+        match &self.data {
+            Data::Single(atom) => {
+                if *atom != STATE_UNCHANGED {
+                    grid.fill(*atom);
+                }
+            }
+            Data::Paletted(paletted_data) => {
+                match paletted_data.palette.bits_per_entry as u8 {
+                    4 => merge_bits::<4, UNPACKED_SIZE>(paletted_data, grid),
+                    8 => merge_bits::<8, UNPACKED_SIZE>(paletted_data, grid),
+                    _ => merge_bits::<16, UNPACKED_SIZE>(paletted_data, grid),
                 }
             }
         }

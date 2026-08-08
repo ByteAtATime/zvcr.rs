@@ -1,5 +1,5 @@
 use crate::definitions::{
-    SECTION_SIZE_BLOCKS, SECTION_SIZE_BIOMES, SEGMENTS_PER_REGION, STATE_UNCHANGED,
+    SECTION_SIZE_BLOCKS, SECTION_SIZE_BIOMES, SEGMENTS_PER_REGION,
 };
 use crate::dimension::DimensionType;
 use crate::region::delta::PackedDeltaData;
@@ -29,12 +29,7 @@ pub fn reconstruct_history<const N: usize>(
         data: current,
     });
     for delta in deltas.iter().skip(1) {
-        let unpacked = delta.data.unpack();
-        for j in 0..N {
-            if unpacked[j] != STATE_UNCHANGED {
-                current[j] = unpacked[j];
-            }
-        }
+        delta.data.unpack_delta_into(&mut current);
         history.push(Snapshot {
             timestamp: delta.timestamp,
             data: current,
