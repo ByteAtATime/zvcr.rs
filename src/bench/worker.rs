@@ -1,4 +1,5 @@
 use super::{FileResult, Progress};
+use crate::io::file_location::EXTENSION;
 use crate::{
     ExperimentalReader, ExperimentalWriter, Reader, ReferenceReader, Writer,
 };
@@ -14,9 +15,33 @@ pub(super) fn bench_one(
     verify: bool,
 ) -> FileResult {
     let t0 = Instant::now();
-    let ref_data = match ref_reader.read(path) {
+    let file_bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            return finish(
+                FileResult {
+                    path: path.to_path_buf(),
+                    ok: false,
+                    step: "reference read",
+                    error: Some(format!("Failed to read file from disk: {e}")),
+                    integrity_ok: None,
+                    original_bytes: 0,
+                    original_raw_bytes: 0,
+                    encoded_bytes: 0,
+                    encoded_raw_bytes: 0,
+                    ref_read_ns: 0,
+                    exp_write_ns: 0,
+                    exp_read_ns: 0,
+                },
+                true,
+                progress,
+            );
+        }
+    };
+    let ref_data = match ref_reader.from_bytes(&file_bytes) {
         Ok(data) => data,
         Err(e) => {
+            let original_bytes = file_bytes.len() as u64;
             return finish(
                 FileResult {
                     path: path.to_path_buf(),
@@ -24,8 +49,10 @@ pub(super) fn bench_one(
                     step: "reference read",
                     error: Some(e),
                     integrity_ok: None,
-                    original_bytes: 0,
+                    original_bytes,
+                    original_raw_bytes: uncompressed_file_size(&file_bytes),
                     encoded_bytes: 0,
+                    encoded_raw_bytes: 0,
                     ref_read_ns: 0,
                     exp_write_ns: 0,
                     exp_read_ns: 0,
@@ -37,7 +64,8 @@ pub(super) fn bench_one(
     };
     let ref_read_ns = t0.elapsed().as_nanos();
 
-    let original_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let original_bytes = file_bytes.len() as u64;
+    let original_raw_bytes = uncompressed_file_size(&file_bytes);
 
     let t1 = Instant::now();
     let encoded = match exp_writer.to_bytes(&ref_data) {
@@ -51,7 +79,9 @@ pub(super) fn bench_one(
                     error: Some(e),
                     integrity_ok: None,
                     original_bytes,
+                    original_raw_bytes,
                     encoded_bytes: 0,
+                    encoded_raw_bytes: 0,
                     ref_read_ns,
                     exp_write_ns: 0,
                     exp_read_ns: 0,
@@ -64,6 +94,7 @@ pub(super) fn bench_one(
     let exp_write_ns = t1.elapsed().as_nanos();
 
     let encoded_bytes = encoded.len() as u64;
+    let encoded_raw_bytes = uncompressed_file_size(&encoded);
 
     let t2 = Instant::now();
     let exp_data = match exp_reader.from_bytes(&encoded) {
@@ -77,7 +108,9 @@ pub(super) fn bench_one(
                     error: Some(e),
                     integrity_ok: None,
                     original_bytes,
+                    original_raw_bytes,
                     encoded_bytes,
+                    encoded_raw_bytes,
                     ref_read_ns,
                     exp_write_ns,
                     exp_read_ns: 0,
@@ -98,7 +131,9 @@ pub(super) fn bench_one(
                 error: None,
                 integrity_ok: None,
                 original_bytes,
+                original_raw_bytes,
                 encoded_bytes,
+                encoded_raw_bytes,
                 ref_read_ns,
                 exp_write_ns,
                 exp_read_ns,
@@ -123,7 +158,9 @@ pub(super) fn bench_one(
             error,
             integrity_ok,
             original_bytes,
+            original_raw_bytes,
             encoded_bytes,
+            encoded_raw_bytes,
             ref_read_ns,
             exp_write_ns,
             exp_read_ns,
@@ -131,6 +168,17 @@ pub(super) fn bench_one(
         integrity_ok != Some(true),
         progress,
     )
+}
+
+fn uncompressed_file_size(bytes: &[u8]) -> u64 {
+    const HEADER: usize = EXTENSION.len() + 4;
+    let Some(body) = bytes.get(HEADER..) else {
+        return bytes.len() as u64;
+    };
+    match zstd::zstd_safe::get_frame_content_size(body) {
+        Ok(Some(n)) => n + HEADER as u64,
+        _ => bytes.len() as u64,
+    }
 }
 
 fn finish(result: FileResult, failed: bool, progress: &Progress) -> FileResult {

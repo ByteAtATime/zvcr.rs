@@ -20,6 +20,8 @@ struct FileResult {
     integrity_ok: Option<bool>,
     original_bytes: u64,
     encoded_bytes: u64,
+    original_raw_bytes: u64,
+    encoded_raw_bytes: u64,
     ref_read_ns: u128,
     exp_write_ns: u128,
     exp_read_ns: u128,

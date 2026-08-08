@@ -45,6 +45,8 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
     let integrity_ok = results.iter().filter(|r| r.integrity_ok == Some(true)).count();
     let input_bytes: u64 = results.iter().map(|r| r.original_bytes).sum();
     let output_bytes: u64 = results.iter().map(|r| r.encoded_bytes).sum();
+    let input_raw_bytes: u64 = results.iter().map(|r| r.original_raw_bytes).sum();
+    let output_raw_bytes: u64 = results.iter().map(|r| r.encoded_raw_bytes).sum();
     let wall = progress.start.elapsed().as_secs_f64();
 
     let ref_read_ns: u128 = results.iter().map(|r| r.ref_read_ns).sum();
@@ -63,20 +65,16 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
         "Output    : {} ({output_bytes})",
         format_bytes(output_bytes)
     );
-    if input_bytes > 0 {
-        let pct = output_bytes as f64 / input_bytes as f64 * 100.0;
-        let ratio = if output_bytes > 0 {
-            format!("{:.2}:1", input_bytes as f64 / output_bytes as f64)
-        } else {
-            "n/a".to_string()
-        };
-        let delta = output_bytes as i128 - input_bytes as i128;
-        let sign = if delta >= 0 { "+" } else { "-" };
-        println!(
-            "Ratio     : {pct:.2}%  ({ratio})  {sign}{}",
-            format_bytes(delta.unsigned_abs() as u64)
-        );
-    }
+    print_ratio_line("Ratio", input_bytes, output_bytes);
+    println!(
+        "Input raw : {} ({input_raw_bytes})",
+        format_bytes(input_raw_bytes)
+    );
+    println!(
+        "Output raw: {} ({output_raw_bytes})",
+        format_bytes(output_raw_bytes)
+    );
+    print_ratio_line("Raw ratio", input_raw_bytes, output_raw_bytes);
     println!("Time      : {wall:.1} s");
     println!("Throughput:");
     println!(
@@ -114,4 +112,22 @@ fn phase_line(label: &str, input_bytes: u64, ns: u128) -> String {
         let mbps = (input_bytes as f64 / (ns as f64 / 1e9)) / 1e6;
         format!("{label} {mbps:>5.1} MB/s ({agg_ms:.0} ms aggregate)")
     }
+}
+
+fn print_ratio_line(label: &str, before: u64, after: u64) {
+    if before == 0 {
+        return;
+    }
+    let pct = after as f64 / before as f64 * 100.0;
+    let ratio = if after > 0 {
+        format!("{:.2}:1", before as f64 / after as f64)
+    } else {
+        "n/a".to_string()
+    };
+    let delta = after as i128 - before as i128;
+    let sign = if delta >= 0 { "+" } else { "-" };
+    println!(
+        "{label:<10}: {pct:.2}%  ({ratio})  {sign}{}",
+        format_bytes(delta.unsigned_abs() as u64)
+    );
 }
