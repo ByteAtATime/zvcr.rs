@@ -78,7 +78,7 @@ pub fn reconstruct_segment(segment: &Segment) -> SegmentData {
             .iter()
             .map(reconstruct_history)
             .collect(),
-        states: Vec::new(),
+        states: segment.info.reverse_deltas.clone(),
         tile_entities: Vec::new(),
     }
 }

@@ -74,10 +74,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .sum();
 
+    let first_segment = region_data.segments.iter().flatten().next();
+    let state_count = first_segment
+        .map(|segment| segment.states.len())
+        .unwrap_or(0);
+    let latest_state = first_segment
+        .and_then(|segment| segment.states.first())
+        .map(|state| format!("{:?} @ {}", state.state_type, state.timestamp))
+        .unwrap_or_else(|| "none".to_string());
+
     println!("Reconstruct took {:?}", t4.duration_since(t3));
     println!("Present segments = {present_segments}");
     println!("Total block snapshots = {block_snapshots}");
     println!("Total biome snapshots = {biome_snapshots}");
+    println!("First segment states: {state_count} (latest: {latest_state})");
 
     Ok(())
 }
