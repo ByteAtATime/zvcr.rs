@@ -58,7 +58,27 @@ impl WriteHandle {
         }
     }
 
-    pub(crate) fn serialize_packed_snapshot<const UNPACKED_SIZE: usize>(
+    pub(crate) fn record_palette_index(&mut self, palette: &Palette, is_block: bool) {
+        let table = if is_block {
+            &mut self.block_palette_table
+        } else {
+            &mut self.biome_palette_table
+        };
+        if palette.direct() {
+            put_u32_le(&mut self.data, u32::MAX);
+            return;
+        }
+        let idx = if let Some(&existing) = table.get(palette) {
+            existing
+        } else {
+            let next_index = table.len();
+            table.insert(palette.clone(), next_index);
+            next_index
+        };
+        put_u32_le(&mut self.data, idx as u32);
+    }
+
+    pub(crate) fn serialize_snapshot_header<const UNPACKED_SIZE: usize>(
         &mut self,
         snapshot: &PackedSnapshot<UNPACKED_SIZE>,
         is_block: bool,
@@ -71,40 +91,38 @@ impl WriteHandle {
             }
             Data::Paletted(paletted) => {
                 put_u8(&mut self.data, 1);
-                let packed_len = paletted.packed_long_array.len();
-                put_u64_le(&mut self.data, packed_len as u64);
-                put_u64_le_slice(&mut self.data, &paletted.packed_long_array);
-
-                let palette_table = if is_block {
-                    &mut self.block_palette_table
-                } else {
-                    &mut self.biome_palette_table
-                };
-
-                if paletted.palette.direct() {
-                    put_u32_le(&mut self.data, u32::MAX);
-                } else {
-                    let idx = if let Some(&existing) = palette_table.get(&paletted.palette) {
-                        existing
-                    } else {
-                        let next_index = palette_table.len();
-                        palette_table.insert(paletted.palette.clone(), next_index);
-                        next_index
-                    };
-                    put_u32_le(&mut self.data, idx as u32);
-                }
+                put_u64_le(&mut self.data, paletted.packed_long_array.len() as u64);
+                self.record_palette_index(&paletted.palette, is_block);
             }
         }
     }
 
-    pub(crate) fn serialize_packed_delta_data<const UNPACKED_SIZE: usize>(
+    pub(crate) fn serialize_snapshot_body<const UNPACKED_SIZE: usize>(
         &mut self,
-        delta_data: &PackedDeltaData<UNPACKED_SIZE>,
+        snapshot: &PackedSnapshot<UNPACKED_SIZE>,
+    ) {
+        if let Data::Paletted(paletted) = &snapshot.data.data {
+            put_u64_le_slice(&mut self.data, &paletted.packed_long_array);
+        }
+    }
+
+    pub(crate) fn serialize_column<const UNPACKED_SIZE: usize>(
+        &mut self,
+        sections: &[&PackedDeltaData<UNPACKED_SIZE>],
         is_block: bool,
     ) {
-        put_u64_le(&mut self.data, delta_data.reverse_deltas.len() as u64);
-        for snapshot in &delta_data.reverse_deltas {
-            self.serialize_packed_snapshot(snapshot, is_block);
+        for section in sections {
+            put_u64_le(&mut self.data, section.reverse_deltas.len() as u64);
+        }
+        for section in sections {
+            for snapshot in &section.reverse_deltas {
+                self.serialize_snapshot_header(snapshot, is_block);
+            }
+        }
+        for section in sections {
+            for snapshot in &section.reverse_deltas {
+                self.serialize_snapshot_body(snapshot);
+            }
         }
     }
 
@@ -157,17 +175,19 @@ impl WriteHandle {
         }
 
         for y in 0..section_count {
-            for segment in &present {
-                inner_handle
-                    .serialize_packed_delta_data(&segment.block_sections.sections[y], true);
-            }
+            let column: Vec<_> = present
+                .iter()
+                .map(|segment| &segment.block_sections.sections[y])
+                .collect();
+            inner_handle.serialize_column(&column, true);
         }
 
         for y in 0..section_count {
-            for segment in &present {
-                inner_handle
-                    .serialize_packed_delta_data(&segment.biome_sections.sections[y], false);
-            }
+            let column: Vec<_> = present
+                .iter()
+                .map(|segment| &segment.biome_sections.sections[y])
+                .collect();
+            inner_handle.serialize_column(&column, false);
         }
 
         for segment in &present {
