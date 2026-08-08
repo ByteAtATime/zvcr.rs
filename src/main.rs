@@ -1,49 +1,8 @@
-use std::time::Instant;
+#[cfg(test)]
 use zvcr::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let location = RegionLocation {
-        rx: -1,
-        rz: -1,
-        dimension_type: DimensionType::Overworld,
-    };
-
-    let test_dir = std::path::Path::new("test_files");
-    let src_path = location.file_path(test_dir);
-
-    let t0 = Instant::now();
-    let region_data = match ReferenceReader::new(0).read(&src_path) {
-        Ok(data) => data,
-        Err(err) => {
-            eprintln!("Could not read file, read error = {err}");
-            return Ok(());
-        }
-    };
-    let t1 = Instant::now();
-
-    let backup_path = location
-        .directory(test_dir)
-        .join(format!("{}.bak", location.file_name()));
-
-    let write_result = ExperimentalWriter::new(
-        ZSTD_COMPRESSION_LEVEL_DEFAULT,
-        default_compression_threads(),
-    )
-    .write(&region_data, &backup_path);
-
-    let bytes_written = match write_result {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Could not write file, write error = {err}");
-            return Ok(());
-        }
-    };
-    let t2 = Instant::now();
-
-    println!("Read took {:?}", t1.duration_since(t0));
-    println!("Write took {:?}", t2.duration_since(t1));
-    println!("Wrote {bytes_written} bytes");
-
+    zvcr::bench::run(std::path::Path::new("test_files"));
     Ok(())
 }
 

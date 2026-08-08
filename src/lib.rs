@@ -1,3 +1,4 @@
+pub mod bench;
 pub mod definitions;
 pub mod dimension;
 pub mod io;
