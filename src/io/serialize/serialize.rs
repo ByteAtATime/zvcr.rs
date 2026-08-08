@@ -156,8 +156,8 @@ impl WriteHandle {
     }
 
     pub fn serialize_segment_info(&mut self, info: &SegmentInfo) {
-        put_u64_le(&mut self.data, info.segment_states.len() as u64);
-        for state in &info.segment_states {
+        put_u64_le(&mut self.data, info.reverse_deltas.len() as u64);
+        for state in &info.reverse_deltas {
             self.serialize_segment_state(state);
         }
     }

@@ -28,7 +28,7 @@ pub struct SegmentState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SegmentInfo {
-    pub segment_states: Vec<SegmentState>,
+    pub reverse_deltas: Vec<SegmentState>,
 }
 
 impl SegmentInfo {
@@ -37,14 +37,14 @@ impl SegmentInfo {
     }
 
     pub fn delta(&self, delta_index: usize) -> Option<&SegmentState> {
-        self.segment_states.get(delta_index)
+        self.reverse_deltas.get(delta_index)
     }
 
     pub fn snapshot_before(&self, timestamp: i64) -> Option<SegmentState> {
         let latest = self.latest_snapshot()?;
         let mut latest_state_type = latest.state_type;
 
-        for state in &self.segment_states {
+        for state in &self.reverse_deltas {
             latest_state_type = state.state_type;
             if timestamp >= state.timestamp {
                 break;
@@ -57,7 +57,7 @@ impl SegmentInfo {
     }
 
     pub fn snapshot_from(&self, timestamp: i64) -> Option<SegmentState> {
-        let nearest = find_nearest_timestamp(&self.segment_states, |s| s.timestamp, timestamp);
+        let nearest = find_nearest_timestamp(&self.reverse_deltas, |s| s.timestamp, timestamp);
         self.snapshot_before(nearest)
     }
 
@@ -68,7 +68,7 @@ impl SegmentInfo {
         {
             return false;
         }
-        self.segment_states.insert(0, new_state);
+        self.reverse_deltas.insert(0, new_state);
         true
     }
 }

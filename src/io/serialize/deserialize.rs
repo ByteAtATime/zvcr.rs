@@ -277,7 +277,7 @@ impl ReadHandle {
             states.push(self.deserialize_segment_state()?);
         }
         Ok(SegmentInfo {
-            segment_states: states,
+            reverse_deltas: states,
         })
     }
 
