@@ -348,17 +348,11 @@ impl ReadHandle {
     ) -> Result<Arc<Segment>, ReadError> {
         let mut segment = Segment::with_section_count(self.ctx.section_count);
 
-        for i in 0..self.ctx.section_count {
-            self.deserialize_packed_delta_data(
-                &mut segment.block_sections.sections[i],
-                block_tables,
-            )?;
+        for section in segment.block_sections.active_mut() {
+            self.deserialize_packed_delta_data(section, block_tables)?;
         }
-        for i in 0..self.ctx.section_count {
-            self.deserialize_packed_delta_data(
-                &mut segment.biome_sections.sections[i],
-                biome_tables,
-            )?;
+        for section in segment.biome_sections.active_mut() {
+            self.deserialize_packed_delta_data(section, biome_tables)?;
         }
 
         segment.info = self.deserialize_segment_info()?;
@@ -373,10 +367,10 @@ impl ReadHandle {
         self.deserialize_palette_table(&mut block_table)?;
         self.deserialize_palette_table(&mut biome_table)?;
 
-        for i in 0..SEGMENTS_PER_REGION {
+        for segment in region.segments.iter_mut() {
             let indicator = self.read_u8()?;
             if indicator != 0 {
-                region.segments[i] = Some(self.deserialize_segment(&block_table, &biome_table)?);
+                *segment = Some(self.deserialize_segment(&block_table, &biome_table)?);
             }
         }
         Ok(())

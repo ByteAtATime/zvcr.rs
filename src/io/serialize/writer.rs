@@ -1,4 +1,3 @@
-use crate::definitions::*;
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::file_type::File;
@@ -171,11 +170,11 @@ impl WriteHandle {
     }
 
     pub fn serialize_segment(&mut self, segment: &Segment) {
-        for i in 0..self.ctx.section_count {
-            self.serialize_packed_delta_data(&segment.block_sections.sections[i], true);
+        for section in segment.block_sections.active() {
+            self.serialize_packed_delta_data(section, true);
         }
-        for i in 0..self.ctx.section_count {
-            self.serialize_packed_delta_data(&segment.biome_sections.sections[i], false);
+        for section in segment.biome_sections.active() {
+            self.serialize_packed_delta_data(section, false);
         }
         self.serialize_segment_info(&segment.info);
         self.serialize_tile_entities(&segment.tile_entities);
@@ -189,8 +188,8 @@ impl WriteHandle {
         );
         inner_handle.ctx = self.ctx.clone();
 
-        for i in 0..SEGMENTS_PER_REGION {
-            if let Some(ref seg) = region.segments[i] {
+        for segment in &region.segments {
+            if let Some(seg) = segment {
                 put_u8(&mut inner_handle.data, 1);
                 inner_handle.serialize_segment(seg);
             } else {

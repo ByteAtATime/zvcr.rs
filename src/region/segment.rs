@@ -24,10 +24,18 @@ impl<const UNPACKED_SIZE: usize> DeltaSections<UNPACKED_SIZE> {
         }
     }
 
+    pub fn active(&self) -> &[PackedDeltaData<UNPACKED_SIZE>] {
+        &self.sections[..self.section_count]
+    }
+
+    pub fn active_mut(&mut self) -> &mut [PackedDeltaData<UNPACKED_SIZE>] {
+        &mut self.sections[..self.section_count]
+    }
+
     pub fn snapshot_from(&self, timestamp: i64) -> Option<Vec<UnpackedData<UNPACKED_SIZE>>> {
         let mut snapshots = Vec::with_capacity(self.section_count);
-        for i in 0..self.section_count {
-            snapshots.push(self.sections[i].snapshot_from(timestamp)?);
+        for section in self.active() {
+            snapshots.push(section.snapshot_from(timestamp)?);
         }
         Some(snapshots)
     }
@@ -36,8 +44,8 @@ impl<const UNPACKED_SIZE: usize> DeltaSections<UNPACKED_SIZE> {
         let mut snapshots = Vec::with_capacity(self.section_count);
         let mut earliest = i64::MAX;
 
-        for i in 0..self.section_count {
-            let latest = self.sections[i].latest_snapshot()?;
+        for section in self.active() {
+            let latest = section.latest_snapshot()?;
             earliest = earliest.min(latest.timestamp);
             snapshots.push(latest.data.unpack());
         }
@@ -46,13 +54,8 @@ impl<const UNPACKED_SIZE: usize> DeltaSections<UNPACKED_SIZE> {
 
     pub fn update_sections(&mut self, section_updates: &[PackedSnapshot<UNPACKED_SIZE>]) -> usize {
         let mut changes = 0;
-        for (i, update) in section_updates.iter().enumerate() {
-            if i >= self.section_count {
-                break;
-            }
-            changes += self.sections[i]
-                .insert_snapshot(update.clone())
-                .unwrap_or(0);
+        for (section, update) in self.active_mut().iter_mut().zip(section_updates) {
+            changes += section.insert_snapshot(update.clone()).unwrap_or(0);
         }
         changes
     }
