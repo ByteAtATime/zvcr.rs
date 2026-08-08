@@ -6,7 +6,7 @@ use crate::io::file_type::File;
 use crate::region::delta::PackedDeltaData;
 use crate::region::segment::Segment;
 use crate::region::segment_info::SegmentState;
-use crate::region::tile_entities::TileEntityList;
+use crate::region::tile_entities::{DeltaTileEntityData, TileEntityDelta, TileEntityList};
 use crate::version::Version;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +40,41 @@ pub fn reconstruct_history<const N: usize>(
         history.push(Snapshot {
             timestamp: delta.timestamp,
             data: current,
+        });
+    }
+    history
+}
+
+pub fn reconstruct_tile_entities(data: &DeltaTileEntityData) -> Vec<Snapshot<TileEntityList>> {
+    let deltas = &data.reverse_deltas;
+    if deltas.is_empty() {
+        return Vec::new();
+    }
+    let mut current = TileEntityList::new();
+    for (pos, delta) in &deltas[0].deltas {
+        if let TileEntityDelta::Put(te) = delta {
+            current.insert(*pos, te.clone());
+        }
+    }
+    let mut history = Vec::with_capacity(deltas.len());
+    history.push(Snapshot {
+        timestamp: deltas[0].timestamp,
+        data: current.clone(),
+    });
+    for list_delta in deltas.iter().skip(1) {
+        for (pos, delta) in &list_delta.deltas {
+            match delta {
+                TileEntityDelta::Put(te) => {
+                    current.insert(*pos, te.clone());
+                }
+                TileEntityDelta::Erase => {
+                    current.remove(pos);
+                }
+            }
+        }
+        history.push(Snapshot {
+            timestamp: list_delta.timestamp,
+            data: current.clone(),
         });
     }
     history
@@ -79,7 +114,7 @@ pub fn reconstruct_segment(segment: &Segment) -> SegmentData {
             .map(reconstruct_history)
             .collect(),
         states: segment.info.reverse_deltas.clone(),
-        tile_entities: Vec::new(),
+        tile_entities: reconstruct_tile_entities(&segment.tile_entities),
     }
 }
 
@@ -134,6 +169,15 @@ mod tests {
                     .unwrap();
                 assert_eq!(snapshot.data, expected);
             }
+        }
+
+        let tile_history = reconstruct_tile_entities(&segment.tile_entities);
+        for (i, snapshot) in tile_history.iter().enumerate() {
+            let expected = segment
+                .tile_entities
+                .snapshot_before(segment.tile_entities.reverse_deltas[i].timestamp)
+                .unwrap();
+            assert_eq!(snapshot.data, expected);
         }
     }
 }

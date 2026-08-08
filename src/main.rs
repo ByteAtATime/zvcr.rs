@@ -82,12 +82,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|segment| segment.states.first())
         .map(|state| format!("{:?} @ {}", state.state_type, state.timestamp))
         .unwrap_or_else(|| "none".to_string());
+    let tile_snapshot_count = first_segment
+        .map(|segment| segment.tile_entities.len())
+        .unwrap_or(0);
+    let latest_tile_count = first_segment
+        .and_then(|segment| segment.tile_entities.first())
+        .map(|snapshot| snapshot.data.len())
+        .unwrap_or(0);
 
     println!("Reconstruct took {:?}", t4.duration_since(t3));
     println!("Present segments = {present_segments}");
     println!("Total block snapshots = {block_snapshots}");
     println!("Total biome snapshots = {biome_snapshots}");
     println!("First segment states: {state_count} (latest: {latest_state})");
+    println!("First segment tile snapshots: {tile_snapshot_count} (latest: {latest_tile_count} entities)");
 
     Ok(())
 }
