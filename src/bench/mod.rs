@@ -59,7 +59,7 @@ pub fn run(root: &Path) {
     println!("Discovered {total} region files");
 
     let ref_arc = Arc::new(ReferenceReader::new(0));
-    let exp_w_arc = Arc::new(ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT, 1));
+    let exp_w_arc = Arc::new(ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT, 0));
     let exp_r_arc = Arc::new(ExperimentalReader::new(0));
 
     let progress = Arc::new(Progress {
@@ -74,7 +74,8 @@ pub fn run(root: &Path) {
 
     let reporter_progress = Arc::clone(&progress);
     let reporter_stop = Arc::clone(&stop);
-    let reporter_handle = std::thread::spawn(move || report::reporter(reporter_progress, reporter_stop));
+    let reporter_handle =
+        std::thread::spawn(move || report::reporter(reporter_progress, reporter_stop));
 
     let ref_arc = Arc::clone(&ref_arc);
     let exp_w_arc = Arc::clone(&exp_w_arc);
