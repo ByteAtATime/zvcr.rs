@@ -1,4 +1,5 @@
 use std::time::Instant;
+use zvcr::raw;
 use zvcr::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,6 +43,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Read took {:?}", t1.duration_since(t0));
     println!("Write took {:?}", t2.duration_since(t1));
     println!("Wrote {bytes_written} bytes");
+
+    let segment = match new_file.region.segments.iter().flatten().next() {
+        Some(segment) => segment,
+        None => {
+            println!("No segments present");
+            return Ok(());
+        }
+    };
+
+    let block_counts: Vec<usize> = segment
+        .block_sections
+        .active()
+        .iter()
+        .map(|section| raw::reconstruct_history(section).len())
+        .collect();
+    let biome_counts: Vec<usize> = segment
+        .biome_sections
+        .active()
+        .iter()
+        .map(|section| raw::reconstruct_history(section).len())
+        .collect();
+    let first_timestamp = segment
+        .block_sections
+        .active()
+        .first()
+        .and_then(|section| section.reverse_deltas.first())
+        .map(|snapshot| snapshot.timestamp);
+
+    println!("Section count = {}", segment.section_count);
+    println!("Block snapshot counts = {block_counts:?}");
+    println!("Biome snapshot counts = {biome_counts:?}");
+    println!("First block timestamp = {first_timestamp:?}");
 
     Ok(())
 }

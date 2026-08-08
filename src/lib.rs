@@ -1,6 +1,7 @@
 pub mod definitions;
 pub mod dimension;
 pub mod io;
+pub mod raw;
 pub mod region;
 pub mod time_utils;
 pub mod version;
