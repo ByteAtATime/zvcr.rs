@@ -38,11 +38,11 @@ pub(super) fn reporter(progress: Arc<Progress>, stop: Arc<AtomicBool>) {
     }
 }
 
-pub(super) fn print_summary(results: &[FileResult], progress: &Progress) {
+pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify: bool) {
     let total = results.len();
     let ok = results.iter().filter(|r| r.ok).count();
     let failed = results.iter().filter(|r| !r.ok).count();
-    let integrity_ok = results.iter().filter(|r| r.integrity_ok).count();
+    let integrity_ok = results.iter().filter(|r| r.integrity_ok == Some(true)).count();
     let input_bytes: u64 = results.iter().map(|r| r.original_bytes).sum();
     let output_bytes: u64 = results.iter().map(|r| r.encoded_bytes).sum();
     let wall = progress.start.elapsed().as_secs_f64();
@@ -53,7 +53,11 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress) {
 
     println!("\n\n================================================================");
     println!("Files     : {total} processed, {ok} ok, {failed} failed");
-    println!("Integrity : {integrity_ok} / {total}");
+    if !verify {
+        println!("Integrity : skipped");
+    } else {
+        println!("Integrity : {integrity_ok} / {total}");
+    }
     println!("Input     : {} ({input_bytes})", format_bytes(input_bytes));
     println!(
         "Output    : {} ({output_bytes})",

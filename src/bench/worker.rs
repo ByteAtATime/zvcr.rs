@@ -11,6 +11,7 @@ pub(super) fn bench_one(
     exp_writer: &ExperimentalWriter,
     exp_reader: &ExperimentalReader,
     progress: &Progress,
+    verify: bool,
 ) -> FileResult {
     let t0 = Instant::now();
     let ref_data = match ref_reader.read(path) {
@@ -22,7 +23,7 @@ pub(super) fn bench_one(
                     ok: false,
                     step: "reference read",
                     error: Some(e),
-                    integrity_ok: false,
+                    integrity_ok: None,
                     original_bytes: 0,
                     encoded_bytes: 0,
                     ref_read_ns: 0,
@@ -48,7 +49,7 @@ pub(super) fn bench_one(
                     ok: false,
                     step: "experimental write",
                     error: Some(e),
-                    integrity_ok: false,
+                    integrity_ok: None,
                     original_bytes,
                     encoded_bytes: 0,
                     ref_read_ns,
@@ -74,7 +75,7 @@ pub(super) fn bench_one(
                     ok: false,
                     step: "experimental decode",
                     error: Some(e),
-                    integrity_ok: false,
+                    integrity_ok: None,
                     original_bytes,
                     encoded_bytes,
                     ref_read_ns,
@@ -88,8 +89,27 @@ pub(super) fn bench_one(
     };
     let exp_read_ns = t2.elapsed().as_nanos();
 
-    let integrity_ok = ref_data == exp_data;
-    let error = if integrity_ok {
+    if !verify {
+        return finish(
+            FileResult {
+                path: path.to_path_buf(),
+                ok: true,
+                step: "decode",
+                error: None,
+                integrity_ok: None,
+                original_bytes,
+                encoded_bytes,
+                ref_read_ns,
+                exp_write_ns,
+                exp_read_ns,
+            },
+            false,
+            progress,
+        );
+    }
+
+    let integrity_ok = Some(ref_data == exp_data);
+    let error = if integrity_ok == Some(true) {
         None
     } else {
         Some("decoded data does not match reference".to_string())
@@ -98,7 +118,7 @@ pub(super) fn bench_one(
     finish(
         FileResult {
             path: path.to_path_buf(),
-            ok: integrity_ok,
+            ok: integrity_ok == Some(true),
             step: "integrity",
             error,
             integrity_ok,
@@ -108,7 +128,7 @@ pub(super) fn bench_one(
             exp_write_ns,
             exp_read_ns,
         },
-        !integrity_ok,
+        integrity_ok != Some(true),
         progress,
     )
 }

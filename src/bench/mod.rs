@@ -17,7 +17,7 @@ struct FileResult {
     ok: bool,
     step: &'static str,
     error: Option<String>,
-    integrity_ok: bool,
+    integrity_ok: Option<bool>,
     original_bytes: u64,
     encoded_bytes: u64,
     ref_read_ns: u128,
@@ -47,7 +47,7 @@ impl Progress {
     }
 }
 
-pub fn run(root: &Path) {
+pub fn run(root: &Path, verify: bool) {
     let paths = discover::discover(root);
     if paths.is_empty() {
         eprintln!("No region files found in {}", root.display());
@@ -83,12 +83,12 @@ pub fn run(root: &Path) {
 
     let results: Vec<FileResult> = paths
         .par_iter()
-        .map(|p| worker::bench_one(p, &ref_arc, &exp_w_arc, &exp_r_arc, &progress))
+        .map(|p| worker::bench_one(p, &ref_arc, &exp_w_arc, &exp_r_arc, &progress, verify))
         .collect();
 
     stop.store(true, Ordering::Relaxed);
     reporter_handle.join().unwrap();
     println!();
 
-    report::print_summary(&results, &progress);
+    report::print_summary(&results, &progress, verify);
 }

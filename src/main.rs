@@ -1,8 +1,18 @@
 #[cfg(test)]
 use zvcr::*;
 
+use clap::Parser;
+
+#[derive(Parser)]
+struct Cli {
+    #[arg(long)]
+    no_verify: bool,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    zvcr::bench::run(std::path::Path::new("test_files"));
+    let cli = Cli::parse();
+    let verify = !cli.no_verify;
+    zvcr::bench::run(std::path::Path::new("test_files"), verify);
     Ok(())
 }
 
