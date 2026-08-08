@@ -70,7 +70,12 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
         } else {
             "n/a".to_string()
         };
-        println!("Ratio     : {pct:.2}%  ({ratio})");
+        let delta = output_bytes as i128 - input_bytes as i128;
+        let sign = if delta >= 0 { "+" } else { "-" };
+        println!(
+            "Ratio     : {pct:.2}%  ({ratio})  {sign}{}",
+            format_bytes(delta.unsigned_abs() as u64)
+        );
     }
     println!("Time      : {wall:.1} s");
     println!("Throughput:");
