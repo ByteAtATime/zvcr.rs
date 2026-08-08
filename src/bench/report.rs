@@ -42,7 +42,10 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
     let total = results.len();
     let ok = results.iter().filter(|r| r.ok).count();
     let failed = results.iter().filter(|r| !r.ok).count();
-    let integrity_ok = results.iter().filter(|r| r.integrity_ok == Some(true)).count();
+    let integrity_ok = results
+        .iter()
+        .filter(|r| r.integrity_ok == Some(true))
+        .count();
     let input_bytes: u64 = results.iter().map(|r| r.original_bytes).sum();
     let output_bytes: u64 = results.iter().map(|r| r.encoded_bytes).sum();
     let input_raw_bytes: u64 = results.iter().map(|r| r.original_raw_bytes).sum();
@@ -118,16 +121,12 @@ fn print_ratio_line(label: &str, before: u64, after: u64) {
     if before == 0 {
         return;
     }
-    let pct = after as f64 / before as f64 * 100.0;
-    let ratio = if after > 0 {
-        format!("{:.2}:1", before as f64 / after as f64)
-    } else {
-        "n/a".to_string()
-    };
     let delta = after as i128 - before as i128;
     let sign = if delta >= 0 { "+" } else { "-" };
-    println!(
-        "{label:<10}: {pct:.2}%  ({ratio})  {sign}{}",
-        format_bytes(delta.unsigned_abs() as u64)
-    );
+    let pct_change = (delta as f64 / before as f64) * 100.0;
+
+    let bytes_str = format!("{}{}", sign, format_bytes(delta.unsigned_abs() as u64));
+    let pct_str = format!("({}{:.1}%)", sign, pct_change.abs());
+
+    println!("{label:<10}: {bytes_str} {pct_str}");
 }
