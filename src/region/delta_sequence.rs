@@ -9,7 +9,7 @@ pub trait DeltaSequence {
     fn snapshot_before(&self, timestamp: i64) -> Option<Self::SnapshotFrom>;
 
     fn latest_snapshot(&self) -> Option<&Self::Snapshot> {
-        self.reverse_deltas().first()
+        self.delta(0)
     }
 
     fn delta(&self, delta_index: usize) -> Option<&Self::Snapshot> {
