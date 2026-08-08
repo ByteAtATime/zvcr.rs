@@ -16,6 +16,19 @@ pub(crate) fn put_u64_le(buf: &mut Vec<u8>, v: u64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
+pub(crate) fn put_u64_le_slice(buf: &mut Vec<u8>, slice: &[u64]) {
+    let byte_len = std::mem::size_of_val(slice);
+    buf.reserve(byte_len);
+    #[cfg(target_endian = "little")]
+    buf.extend_from_slice(unsafe {
+        std::slice::from_raw_parts(slice.as_ptr() as *const u8, byte_len)
+    });
+    #[cfg(not(target_endian = "little"))]
+    for &v in slice {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+}
+
 pub(crate) fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
     buf.extend_from_slice(v);
 }

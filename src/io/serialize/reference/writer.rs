@@ -74,9 +74,7 @@ impl WriteHandle {
                 put_u8(&mut self.data, 1);
                 let packed_len = paletted.packed_long_array.len();
                 put_u64_le(&mut self.data, packed_len as u64);
-                for &val in &paletted.packed_long_array {
-                    put_u64_le(&mut self.data, val);
-                }
+                put_u64_le_slice(&mut self.data, &paletted.packed_long_array);
 
                 let palette_table = if is_block {
                     &mut self.block_palette_table
