@@ -9,6 +9,7 @@ pub use definitions::*;
 pub use dimension::*;
 pub use io::compression::*;
 pub use io::file_location::*;
+pub use io::file_type::*;
 pub use io::serialize::deserialize::*;
 pub use io::serialize::serialize::*;
 pub use region::delta_sequence::*;
