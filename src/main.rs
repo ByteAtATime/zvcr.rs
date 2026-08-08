@@ -1,6 +1,6 @@
 use std::time::Instant;
+use zvcr::io::serialize::raw_reader::{ReferenceReader, Reader};
 use zvcr::io::serialize::raw_writer::{ReferenceWriter, Writer};
-use zvcr::raw;
 use zvcr::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,10 +11,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let test_dir = std::path::Path::new("test_files");
+    let src_path = location.file_path(test_dir);
 
     let t0 = Instant::now();
-    let new_file = match read_file_at(test_dir, &location, 0) {
-        Ok(file) => file,
+    let region_data = match ReferenceReader::new(0).read(&src_path) {
+        Ok(data) => data,
         Err(err) => {
             eprintln!("Could not read file, read error = {err}");
             return Ok(());
@@ -25,10 +26,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backup_path = location
         .directory(test_dir)
         .join(format!("{}.bak", location.file_name()));
-
-    let t2 = Instant::now();
-    let region_data = raw::reconstruct_region(&new_file);
-    let t3 = Instant::now();
 
     let write_result = ReferenceWriter::new(
         ZSTD_COMPRESSION_LEVEL_DEFAULT,
@@ -43,11 +40,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-    let t4 = Instant::now();
+    let t2 = Instant::now();
 
     println!("Read took {:?}", t1.duration_since(t0));
-    println!("Reconstruct took {:?}", t3.duration_since(t2));
-    println!("Write took {:?}", t4.duration_since(t3));
+    println!("Write took {:?}", t2.duration_since(t1));
     println!("Wrote {bytes_written} bytes");
 
     Ok(())
