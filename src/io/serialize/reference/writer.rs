@@ -33,19 +33,19 @@ fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
     buf.extend_from_slice(v);
 }
 
-pub type PaletteTable = AHashMap<Palette, usize>;
+pub(crate) type PaletteTable = AHashMap<Palette, usize>;
 
-pub struct WriteHandle {
-    pub compression_level: i32,
-    pub compression_threads: u32,
-    pub ctx: Context,
-    pub data: Vec<u8>,
+pub(crate) struct WriteHandle {
+    pub(crate) compression_level: i32,
+    pub(crate) compression_threads: u32,
+    pub(crate) ctx: Context,
+    pub(crate) data: Vec<u8>,
     block_palette_table: PaletteTable,
     biome_palette_table: PaletteTable,
 }
 
 impl WriteHandle {
-    pub fn new(protocol_version: u16, compression_level: i32, compression_threads: u32) -> Self {
+    pub(crate) fn new(protocol_version: u16, compression_level: i32, compression_threads: u32) -> Self {
         Self {
             compression_level,
             compression_threads,
@@ -59,7 +59,7 @@ impl WriteHandle {
         }
     }
 
-    pub fn serialize_palette_table(table: &PaletteTable, buf: &mut Vec<u8>) {
+    pub(crate) fn serialize_palette_table(table: &PaletteTable, buf: &mut Vec<u8>) {
         let mut ordered = vec![DIRECT_PALETTE; table.len()];
         for (palette, &index) in table {
             ordered[index] = palette.clone();
@@ -78,7 +78,7 @@ impl WriteHandle {
         }
     }
 
-    pub fn serialize_packed_snapshot<const UNPACKED_SIZE: usize>(
+    pub(crate) fn serialize_packed_snapshot<const UNPACKED_SIZE: usize>(
         &mut self,
         snapshot: &PackedSnapshot<UNPACKED_SIZE>,
         is_block: bool,
@@ -119,7 +119,7 @@ impl WriteHandle {
         }
     }
 
-    pub fn serialize_packed_delta_data<const UNPACKED_SIZE: usize>(
+    pub(crate) fn serialize_packed_delta_data<const UNPACKED_SIZE: usize>(
         &mut self,
         delta_data: &PackedDeltaData<UNPACKED_SIZE>,
         is_block: bool,
@@ -130,19 +130,19 @@ impl WriteHandle {
         }
     }
 
-    pub fn serialize_segment_state(&mut self, state: &SegmentState) {
+    pub(crate) fn serialize_segment_state(&mut self, state: &SegmentState) {
         put_u8(&mut self.data, state.state_type as u8);
         put_u64_le(&mut self.data, state.timestamp as u64);
     }
 
-    pub fn serialize_segment_info(&mut self, info: &SegmentInfo) {
+    pub(crate) fn serialize_segment_info(&mut self, info: &SegmentInfo) {
         put_u64_le(&mut self.data, info.reverse_deltas.len() as u64);
         for state in &info.reverse_deltas {
             self.serialize_segment_state(state);
         }
     }
 
-    pub fn serialize_tile_entities(&mut self, tile_entities: &DeltaTileEntityData) {
+    pub(crate) fn serialize_tile_entities(&mut self, tile_entities: &DeltaTileEntityData) {
         put_u64_le(&mut self.data, tile_entities.reverse_deltas.len() as u64);
         for list_delta in &tile_entities.reverse_deltas {
             put_u64_le(&mut self.data, list_delta.timestamp as u64);
@@ -169,7 +169,7 @@ impl WriteHandle {
         }
     }
 
-    pub fn serialize_segment(&mut self, segment: &Segment) {
+    pub(crate) fn serialize_segment(&mut self, segment: &Segment) {
         for section in segment.block_sections.active() {
             self.serialize_packed_delta_data(section, true);
         }
@@ -180,7 +180,7 @@ impl WriteHandle {
         self.serialize_tile_entities(&segment.tile_entities);
     }
 
-    pub fn serialize_region(&mut self, region: &Region) -> Result<(), String> {
+    pub(crate) fn serialize_region(&mut self, region: &Region) -> Result<(), String> {
         let mut inner_handle = WriteHandle::new(
             self.ctx.protocol_version,
             self.compression_level,
@@ -207,7 +207,7 @@ impl WriteHandle {
         Ok(())
     }
 
-    pub fn serialize_file(&mut self, file: &File) -> Result<(), String> {
+    pub(crate) fn serialize_file(&mut self, file: &File) -> Result<(), String> {
         self.ctx.initialize_section_count(file.dimension_type);
         put_bytes(&mut self.data, EXTENSION.as_bytes());
         put_u8(&mut self.data, ZVCR3D_LATEST_VERSION as u8);
@@ -218,7 +218,7 @@ impl WriteHandle {
     }
 }
 
-pub fn serialize_file_to_vec(
+pub(crate) fn serialize_file_to_vec(
     file: &File,
     compression_level: i32,
     compression_threads: u32,
@@ -232,7 +232,8 @@ pub fn serialize_file_to_vec(
     Ok(handle.data)
 }
 
-pub fn write_file(
+#[allow(dead_code)]
+pub(crate) fn write_file(
     file: &File,
     filepath: &Path,
     compression_level: i32,
@@ -243,7 +244,8 @@ pub fn write_file(
     Ok(bytes.len())
 }
 
-pub fn write_file_at(
+#[allow(dead_code)]
+pub(crate) fn write_file_at(
     file: &File,
     parent_directory: &Path,
     location: &RegionLocation,

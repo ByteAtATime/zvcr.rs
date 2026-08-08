@@ -16,15 +16,15 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-pub struct ReadHandle {
-    pub ctx: Context,
+pub(crate) struct ReadHandle {
+    pub(crate) ctx: Context,
     data: Vec<u8>,
     pos: usize,
     max_deltas: usize,
 }
 
 impl ReadHandle {
-    pub fn new(data: Vec<u8>, max_deltas: usize) -> Self {
+    pub(crate) fn new(data: Vec<u8>, max_deltas: usize) -> Self {
         Self {
             ctx: Context::default(),
             data,
@@ -33,7 +33,8 @@ impl ReadHandle {
         }
     }
 
-    pub fn offset(&self) -> usize {
+    #[allow(dead_code)]
+    pub(crate) fn offset(&self) -> usize {
         self.pos
     }
 
@@ -73,7 +74,7 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub fn validate_file_prefix(&mut self, prefix: &str) -> Result<(), ReadError> {
+    pub(crate) fn validate_file_prefix(&mut self, prefix: &str) -> Result<(), ReadError> {
         let mut buf = vec![0u8; prefix.len()];
         self.read_exact(&mut buf)?;
         if buf != prefix.as_bytes() {
@@ -82,7 +83,7 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub fn deserialize_version(&mut self, latest: Version) -> Result<Version, ReadError> {
+    pub(crate) fn deserialize_version(&mut self, latest: Version) -> Result<Version, ReadError> {
         let ver_num = self.read_u8()?;
         if ver_num > latest as u8 {
             return Err(ReadError::InvalidVersion(ver_num));
@@ -90,7 +91,7 @@ impl ReadHandle {
         Version::from_u8(ver_num).ok_or(ReadError::InvalidVersion(ver_num))
     }
 
-    pub fn deserialize_dimension_type(&mut self) -> Result<DimensionType, ReadError> {
+    pub(crate) fn deserialize_dimension_type(&mut self) -> Result<DimensionType, ReadError> {
         let dim_num = self.read_u8()?;
         let dim =
             DimensionType::from_u8(dim_num).ok_or(ReadError::InvalidDimensionType(dim_num))?;
@@ -98,7 +99,7 @@ impl ReadHandle {
         Ok(dim)
     }
 
-    pub fn deserialize_palette_table(&mut self, table: &mut Vec<Palette>) -> Result<(), ReadError> {
+    pub(crate) fn deserialize_palette_table(&mut self, table: &mut Vec<Palette>) -> Result<(), ReadError> {
         let len = self.read_u32()?;
         if len > MAX_PALETTE_TABLE_LENGTH {
             return Err(ReadError::LengthExceeded(
@@ -129,7 +130,7 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub fn deserialize_packed_snapshot<const UNPACKED_SIZE: usize>(
+    pub(crate) fn deserialize_packed_snapshot<const UNPACKED_SIZE: usize>(
         &mut self,
         snapshot: &mut PackedSnapshot<UNPACKED_SIZE>,
         palette_table: &[Palette],
@@ -182,7 +183,7 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub fn deserialize_packed_delta_data<const UNPACKED_SIZE: usize>(
+    pub(crate) fn deserialize_packed_delta_data<const UNPACKED_SIZE: usize>(
         &mut self,
         deltas: &mut PackedDeltaData<UNPACKED_SIZE>,
         palette_table: &[Palette],
@@ -225,7 +226,7 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub fn deserialize_segment_state(&mut self) -> Result<SegmentState, ReadError> {
+    pub(crate) fn deserialize_segment_state(&mut self) -> Result<SegmentState, ReadError> {
         let state_type_id = self.read_u8()?;
         let state_type = SegmentStateType::from_u8(state_type_id).ok_or_else(|| {
             ReadError::Generic(format!("Invalid segment state ID: {state_type_id}"))
@@ -237,7 +238,7 @@ impl ReadHandle {
         })
     }
 
-    pub fn deserialize_segment_info(&mut self) -> Result<SegmentInfo, ReadError> {
+    pub(crate) fn deserialize_segment_info(&mut self) -> Result<SegmentInfo, ReadError> {
         let states_len = self.read_u64()?;
         if states_len > MAX_SEGMENT_STATES_LENGTH {
             return Err(ReadError::LengthExceeded(
@@ -254,7 +255,7 @@ impl ReadHandle {
         })
     }
 
-    pub fn deserialize_tile_entities(&mut self) -> Result<DeltaTileEntityData, ReadError> {
+    pub(crate) fn deserialize_tile_entities(&mut self) -> Result<DeltaTileEntityData, ReadError> {
         let deltas_len = self.read_u64()?;
         if deltas_len > MAX_DELTA_LENGTH {
             return Err(ReadError::LengthExceeded(
@@ -312,7 +313,7 @@ impl ReadHandle {
         Ok(tile_entities)
     }
 
-    pub fn deserialize_segment(
+    pub(crate) fn deserialize_segment(
         &mut self,
         block_tables: &[Palette],
         biome_tables: &[Palette],
@@ -331,7 +332,7 @@ impl ReadHandle {
         Ok(Arc::new(segment))
     }
 
-    pub fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
+    pub(crate) fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
         let mut block_table = Vec::new();
         let mut biome_table = Vec::new();
 
@@ -347,7 +348,7 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub fn deserialize_file(&mut self) -> Result<File, ReadError> {
+    pub(crate) fn deserialize_file(&mut self) -> Result<File, ReadError> {
         self.validate_file_prefix(EXTENSION)?;
         let version = self.deserialize_version(ZVCR3D_LATEST_VERSION)?;
         let dimension_type = self.deserialize_dimension_type()?;
@@ -373,13 +374,15 @@ impl ReadHandle {
     }
 }
 
-pub fn read_file(filepath: &Path, max_deltas: usize) -> Result<File, ReadError> {
+#[allow(dead_code)]
+pub(crate) fn read_file(filepath: &Path, max_deltas: usize) -> Result<File, ReadError> {
     let buffer = fs::read(filepath).map_err(|e| ReadError::FileNotFound(e.to_string()))?;
     let mut handle = ReadHandle::new(buffer, max_deltas);
     handle.deserialize_file()
 }
 
-pub fn read_file_at(
+#[allow(dead_code)]
+pub(crate) fn read_file_at(
     parent_directory: &Path,
     location: &RegionLocation,
     max_deltas: usize,

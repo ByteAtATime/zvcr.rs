@@ -1,6 +1,4 @@
 use std::time::Instant;
-use zvcr::io::serialize::raw_reader::{ReferenceReader, Reader};
-use zvcr::io::serialize::raw_writer::{ReferenceWriter, Writer};
 use zvcr::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -81,8 +79,9 @@ mod tests {
             rz: -1,
             dimension_type: DimensionType::Overworld,
         };
-        let zero = read_file_at(dir, &location, 0);
-        let one = read_file_at(dir, &location, 1);
+        let path = location.file_path(dir);
+        let zero = ReferenceReader::new(0).read(&path);
+        let one = ReferenceReader::new(1).read(&path);
         assert!(zero.is_ok(), "max_deltas=0 failed: {:?}", zero.err());
         assert!(one.is_ok(), "max_deltas=1 failed: {:?}", one.err());
     }

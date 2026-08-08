@@ -2,14 +2,14 @@ use crate::dimension::DimensionType;
 use crate::region::segment::Region;
 use crate::version::{Version, ZVCR3D_LATEST_VERSION};
 
-pub const DEFAULT_PROTOCOL_VERSION: u16 = 769;
+pub(crate) const DEFAULT_PROTOCOL_VERSION: u16 = 769;
 
 #[derive(Debug, Clone)]
-pub struct File {
-    pub version: Version,
-    pub protocol_version: u16,
-    pub dimension_type: DimensionType,
-    pub region: Region,
+pub(crate) struct File {
+    pub(crate) version: Version,
+    pub(crate) protocol_version: u16,
+    pub(crate) dimension_type: DimensionType,
+    pub(crate) region: Region,
 }
 
 impl Default for File {
