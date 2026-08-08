@@ -130,13 +130,23 @@ impl ReadHandle {
             ));
         }
 
-        let byte_len = packed_length as usize * 8;
-        let mut packed_bytes = vec![0u8; byte_len];
-        self.read_exact(&mut packed_bytes)?;
-        let packed_longs: Vec<u64> = packed_bytes
-            .chunks_exact(8)
-            .map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-            .collect();
+        let packed_len = packed_length as usize;
+        let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
+        {
+            let byte_slice = unsafe {
+                std::slice::from_raw_parts_mut(
+                    packed_longs.as_mut_ptr() as *mut u8,
+                    packed_len * std::mem::size_of::<u64>(),
+                )
+            };
+            self.read_exact(byte_slice)?;
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            for v in packed_longs.iter_mut() {
+                *v = v.to_le();
+            }
+        }
 
         let palette_index = self.read_u32()?;
         let palette = if palette_index == u32::MAX {
