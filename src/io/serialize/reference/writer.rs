@@ -39,7 +39,7 @@ impl WriteHandle {
     }
 
     pub(crate) fn serialize_palette_table(table: &PaletteTable, buf: &mut Vec<u8>) {
-        let mut ordered = vec![DIRECT_PALETTE; table.len()];
+        let mut ordered = vec![DIRECT_PALETTE.clone(); table.len()];
         for (palette, &index) in table {
             ordered[index] = palette.clone();
         }
@@ -51,7 +51,7 @@ impl WriteHandle {
                 continue;
             }
             put_u16_le(buf, len as u16);
-            for &atom in &palette.palette {
+            for &atom in palette.palette.iter() {
                 put_u16_le(buf, atom);
             }
         }

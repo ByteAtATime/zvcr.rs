@@ -90,7 +90,7 @@ impl ReadHandle {
             if palette_len > MAX_INDIRECT_PALETTE_SIZE {
                 let skip_bytes = palette_len * std::mem::size_of::<SegmentAtom>();
                 self.pos += skip_bytes;
-                table.push(DIRECT_PALETTE);
+                table.push(DIRECT_PALETTE.clone());
                 continue;
             }
 
@@ -100,7 +100,7 @@ impl ReadHandle {
             }
             let bpe = bits_per_entry(palette_len);
             table.push(Palette {
-                palette: palette_vec,
+                palette: palette_vec.into(),
                 bits_per_entry: bpe,
             });
         }
@@ -150,7 +150,7 @@ impl ReadHandle {
 
         let palette_index = self.read_u32()?;
         let palette = if palette_index == u32::MAX {
-            DIRECT_PALETTE
+            DIRECT_PALETTE.clone()
         } else {
             if palette_index as usize >= palette_table.len() {
                 return Err(ReadError::InvalidPaletteIndex {

@@ -1,5 +1,6 @@
 use crate::definitions::*;
 use crate::region::unpacked_view::UnpackedData;
+use std::sync::{Arc, LazyLock};
 
 pub const MAX_INDIRECT_PALETTE_SIZE: usize = u8::MAX as usize + 1;
 pub const ATOM_COUNT: usize = u16::MAX as usize + 1;
@@ -14,7 +15,7 @@ pub fn bits_per_entry(palette_length: usize) -> usize {
     }
 }
 
-pub type VectorPalette = Vec<SegmentAtom>;
+pub type VectorPalette = Arc<[SegmentAtom]>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Palette {
@@ -32,10 +33,10 @@ impl Palette {
     }
 }
 
-pub const DIRECT_PALETTE: Palette = Palette {
-    palette: Vec::new(),
+pub static DIRECT_PALETTE: LazyLock<Palette> = LazyLock::new(|| Palette {
+    palette: Arc::from([]),
     bits_per_entry: 16,
-};
+});
 
 pub struct PackScratch {
     pub indices: [u8; ATOM_COUNT],
@@ -71,14 +72,14 @@ pub fn build_palette_with<const UNPACKED_SIZE: usize>(
         }
         scratch.seen[atom as usize] = seen_mark;
         if palette.len() >= MAX_INDIRECT_PALETTE_SIZE {
-            return DIRECT_PALETTE;
+            return DIRECT_PALETTE.clone();
         }
         scratch.indices[atom as usize] = palette.len() as u8;
         palette.push(atom);
     }
     let bpe = bits_per_entry(palette.len());
     Palette {
-        palette,
+        palette: palette.into(),
         bits_per_entry: bpe,
     }
 }
