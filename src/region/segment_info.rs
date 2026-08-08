@@ -1,4 +1,4 @@
-use crate::time_utils::find_nearest_timestamp;
+use crate::region::delta_sequence::DeltaSequence;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -31,16 +31,19 @@ pub struct SegmentInfo {
     pub reverse_deltas: Vec<SegmentState>,
 }
 
-impl SegmentInfo {
-    pub fn latest_snapshot(&self) -> Option<&SegmentState> {
-        self.delta(0)
+impl DeltaSequence for SegmentInfo {
+    type Snapshot = SegmentState;
+    type SnapshotFrom = SegmentState;
+
+    fn reverse_deltas(&self) -> &[Self::Snapshot] {
+        &self.reverse_deltas
     }
 
-    pub fn delta(&self, delta_index: usize) -> Option<&SegmentState> {
-        self.reverse_deltas.get(delta_index)
+    fn snapshot_timestamp(snapshot: &Self::Snapshot) -> i64 {
+        snapshot.timestamp
     }
 
-    pub fn snapshot_before(&self, timestamp: i64) -> Option<SegmentState> {
+    fn snapshot_before(&self, timestamp: i64) -> Option<Self::SnapshotFrom> {
         let latest = self.latest_snapshot()?;
         let mut latest_state_type = latest.state_type;
 
@@ -55,12 +58,9 @@ impl SegmentInfo {
             timestamp,
         })
     }
+}
 
-    pub fn snapshot_from(&self, timestamp: i64) -> Option<SegmentState> {
-        let nearest = find_nearest_timestamp(&self.reverse_deltas, |s| s.timestamp, timestamp);
-        self.snapshot_before(nearest)
-    }
-
+impl SegmentInfo {
     pub fn insert_snapshot(&mut self, new_state: SegmentState) -> bool {
         if let Some(latest) = self.latest_snapshot()
             && (new_state.timestamp <= latest.timestamp

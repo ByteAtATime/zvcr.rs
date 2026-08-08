@@ -1,5 +1,5 @@
 use crate::definitions::*;
-use crate::time_utils::find_nearest_timestamp;
+use crate::region::delta_sequence::DeltaSequence;
 
 pub type LongArray = Vec<u64>;
 pub type UnpackedData<const UNPACKED_SIZE: usize> = [SegmentAtom; UNPACKED_SIZE];
@@ -237,21 +237,19 @@ pub struct PackedDeltaData<const UNPACKED_SIZE: usize> {
     pub reverse_deltas: Vec<PackedSnapshot<UNPACKED_SIZE>>,
 }
 
-impl<const UNPACKED_SIZE: usize> PackedDeltaData<UNPACKED_SIZE> {
-    pub fn latest_snapshot(&self) -> Option<&PackedSnapshot<UNPACKED_SIZE>> {
-        self.delta(0)
+impl<const UNPACKED_SIZE: usize> DeltaSequence for PackedDeltaData<UNPACKED_SIZE> {
+    type Snapshot = PackedSnapshot<UNPACKED_SIZE>;
+    type SnapshotFrom = UnpackedData<UNPACKED_SIZE>;
+
+    fn reverse_deltas(&self) -> &[Self::Snapshot] {
+        &self.reverse_deltas
     }
 
-    pub fn delta(&self, delta_index: usize) -> Option<&PackedSnapshot<UNPACKED_SIZE>> {
-        self.reverse_deltas.get(delta_index)
+    fn snapshot_timestamp(snapshot: &Self::Snapshot) -> i64 {
+        snapshot.timestamp
     }
 
-    pub fn snapshot_from(&self, timestamp: i64) -> Option<UnpackedData<UNPACKED_SIZE>> {
-        let nearest = find_nearest_timestamp(&self.reverse_deltas, |s| s.timestamp, timestamp);
-        self.snapshot_before(nearest)
-    }
-
-    pub fn snapshot_before(&self, timestamp: i64) -> Option<UnpackedData<UNPACKED_SIZE>> {
+    fn snapshot_before(&self, timestamp: i64) -> Option<Self::SnapshotFrom> {
         let latest_packed = self.latest_snapshot()?;
         let mut latest_unpacked = latest_packed.data.unpack();
 
@@ -273,7 +271,9 @@ impl<const UNPACKED_SIZE: usize> PackedDeltaData<UNPACKED_SIZE> {
         }
         Some(latest_unpacked)
     }
+}
 
+impl<const UNPACKED_SIZE: usize> PackedDeltaData<UNPACKED_SIZE> {
     pub fn insert_snapshot(
         &mut self,
         new_snapshot: PackedSnapshot<UNPACKED_SIZE>,

@@ -11,6 +11,7 @@ pub use io::compression::*;
 pub use io::file_location::*;
 pub use io::serialize::deserialize::*;
 pub use io::serialize::serialize::*;
+pub use region::delta_sequence::*;
 pub use region::paletted_delta_data::*;
 pub use region::segment::*;
 pub use region::segment_info::*;

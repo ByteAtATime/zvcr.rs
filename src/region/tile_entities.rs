@@ -1,5 +1,5 @@
 use crate::definitions::DeltaInsertionStatus;
-use crate::time_utils::find_nearest_timestamp;
+use crate::region::delta_sequence::DeltaSequence;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -50,16 +50,19 @@ pub struct DeltaTileEntityData {
     pub reverse_deltas: Vec<TileEntityListDelta>,
 }
 
-impl DeltaTileEntityData {
-    pub fn latest_snapshot(&self) -> Option<&TileEntityListDelta> {
-        self.delta(0)
+impl DeltaSequence for DeltaTileEntityData {
+    type Snapshot = TileEntityListDelta;
+    type SnapshotFrom = TileEntityList;
+
+    fn reverse_deltas(&self) -> &[Self::Snapshot] {
+        &self.reverse_deltas
     }
 
-    pub fn delta(&self, delta_index: usize) -> Option<&TileEntityListDelta> {
-        self.reverse_deltas.get(delta_index)
+    fn snapshot_timestamp(snapshot: &Self::Snapshot) -> i64 {
+        snapshot.timestamp
     }
 
-    pub fn snapshot_before(&self, timestamp: i64) -> Option<TileEntityList> {
+    fn snapshot_before(&self, timestamp: i64) -> Option<Self::SnapshotFrom> {
         let latest = self.latest_snapshot()?;
         let mut snapshot = TileEntityList::new();
 
@@ -91,12 +94,9 @@ impl DeltaTileEntityData {
 
         Some(snapshot)
     }
+}
 
-    pub fn snapshot_from(&self, timestamp: i64) -> Option<TileEntityList> {
-        let nearest = find_nearest_timestamp(&self.reverse_deltas, |s| s.timestamp, timestamp);
-        self.snapshot_before(nearest)
-    }
-
+impl DeltaTileEntityData {
     pub fn insert_snapshot(
         &mut self,
         timestamp: i64,

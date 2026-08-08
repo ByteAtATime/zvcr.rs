@@ -1,5 +1,6 @@
 use crate::definitions::*;
 use crate::dimension::DimensionType;
+use crate::region::delta_sequence::DeltaSequence;
 use crate::region::paletted_delta_data::*;
 use crate::region::segment_info::SegmentInfo;
 use crate::region::tile_entities::DeltaTileEntityData;
