@@ -91,7 +91,6 @@ impl WriteHandle {
             }
             Data::Paletted(paletted) => {
                 put_u8(&mut self.data, 1);
-                put_u64_le(&mut self.data, paletted.packed_long_array.len() as u64);
                 self.record_palette_index(&paletted.palette, is_block);
             }
         }

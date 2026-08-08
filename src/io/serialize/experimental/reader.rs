@@ -158,25 +158,24 @@ impl ReadHandle {
                     continue;
                 }
 
-                let packed_length = self.read_u64()?;
-                if packed_length > MAX_PACKED_LENGTH {
-                    return Err(ReadError::LengthExceeded(
-                        "Packed length invalid".to_string(),
-                    ));
-                }
                 let palette_index = self.read_u32()?;
-                let packed_len = packed_length as usize;
+                let bits_per_entry = if palette_index == u32::MAX {
+                    16
+                } else {
+                    if palette_index as usize >= palette_table.len() {
+                        return Err(ReadError::InvalidPaletteIndex {
+                            index: palette_index,
+                            max: palette_table.len(),
+                        });
+                    }
+                    palette_table[palette_index as usize].bits_per_entry
+                };
+                let packed_len = UNPACKED_SIZE.div_ceil(64 / bits_per_entry);
 
                 if active {
                     let palette = if palette_index == u32::MAX {
                         DIRECT_PALETTE.clone()
                     } else {
-                        if palette_index as usize >= palette_table.len() {
-                            return Err(ReadError::InvalidPaletteIndex {
-                                index: palette_index,
-                                max: palette_table.len(),
-                            });
-                        }
                         palette_table[palette_index as usize].clone()
                     };
                     sections[section_index].reverse_deltas[delta_index] = PackedSnapshot {
