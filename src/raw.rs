@@ -3,10 +3,8 @@ use crate::definitions::{
 };
 use crate::dimension::DimensionType;
 use crate::region::delta::PackedDeltaData;
-use crate::region::packed_data::{PackedData, PackedSnapshot};
-use crate::region::segment::Segment;
 use crate::region::segment_info::SegmentState;
-use crate::region::tile_entities::{DeltaTileEntityData, TileEntity, TileEntityDelta, TileEntityList};
+use crate::region::tile_entities::{DeltaTileEntityData, TileEntityDelta, TileEntityList};
 use crate::version::Version;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,59 +95,4 @@ pub struct RegionData {
     pub protocol_version: u16,
     pub dimension: DimensionType,
     pub segments: [Option<SegmentData>; SEGMENTS_PER_REGION],
-}
-
-pub fn reconstruct_segment(segment: &Segment) -> SegmentData {
-    SegmentData {
-        block_sections: segment
-            .block_sections
-            .active()
-            .iter()
-            .map(reconstruct_history)
-            .collect(),
-        biome_sections: segment
-            .biome_sections
-            .active()
-            .iter()
-            .map(reconstruct_history)
-            .collect(),
-        states: segment.info.reverse_deltas.clone(),
-        tile_entities: reconstruct_tile_entities(&segment.tile_entities),
-    }
-}
-
-pub fn encode_history<const N: usize>(history: &SectionHistory<[u16; N]>) -> PackedDeltaData<N> {
-    let mut packed = PackedDeltaData::default();
-    for snap in history.iter().rev() {
-        packed
-            .insert_snapshot(PackedSnapshot {
-                data: PackedData::pack(&snap.data),
-                timestamp: snap.timestamp,
-            })
-            .expect("encode_history: non-canonical input");
-    }
-    packed
-}
-
-pub fn encode_tile_entities(history: &[Snapshot<TileEntityList>]) -> DeltaTileEntityData {
-    let mut data = DeltaTileEntityData::default();
-    for snap in history.iter().rev() {
-        let entities: Vec<TileEntity> = snap.data.values().cloned().collect();
-        data.insert_snapshot(snap.timestamp, &entities)
-            .expect("encode_tile_entities: non-canonical input");
-    }
-    data
-}
-
-pub fn encode_segment(sd: &SegmentData) -> Segment {
-    debug_assert_eq!(sd.block_sections.len(), sd.biome_sections.len());
-    let section_count = sd.block_sections.len();
-    let mut segment = Segment::with_section_count(section_count);
-    for i in 0..section_count {
-        segment.block_sections.sections[i] = encode_history(&sd.block_sections[i]);
-        segment.biome_sections.sections[i] = encode_history(&sd.biome_sections[i]);
-    }
-    segment.info.reverse_deltas = sd.states.clone();
-    segment.tile_entities = encode_tile_entities(&sd.tile_entities);
-    segment
 }
