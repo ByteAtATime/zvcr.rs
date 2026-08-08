@@ -49,8 +49,8 @@ impl Progress {
     }
 }
 
-pub fn run(root: &Path, verify: bool) {
-    let paths = discover::discover(root);
+pub fn run(root: &Path, verify: bool, sample: Option<usize>) {
+    let paths = discover::discover(root, sample);
     if paths.is_empty() {
         eprintln!("No region files found in {}", root.display());
         return;
