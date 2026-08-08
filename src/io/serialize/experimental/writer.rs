@@ -105,7 +105,7 @@ impl WriteHandle {
         }
     }
 
-    pub(crate) fn serialize_column<const UNPACKED_SIZE: usize>(
+    pub(crate) fn serialize_column_headers<const UNPACKED_SIZE: usize>(
         &mut self,
         sections: &[&PackedDeltaData<UNPACKED_SIZE>],
         is_block: bool,
@@ -116,11 +116,6 @@ impl WriteHandle {
         for section in sections {
             for snapshot in &section.reverse_deltas {
                 self.serialize_snapshot_header(snapshot, is_block);
-            }
-        }
-        for section in sections {
-            for snapshot in &section.reverse_deltas {
-                self.serialize_snapshot_body(snapshot);
             }
         }
     }
@@ -173,26 +168,48 @@ impl WriteHandle {
             put_u8(&mut inner_handle.data, if segment.is_some() { 1 } else { 0 });
         }
 
-        for y in 0..section_count {
-            let column: Vec<_> = present
-                .iter()
-                .map(|segment| &segment.block_sections.sections[y])
-                .collect();
-            inner_handle.serialize_column(&column, true);
+        let block_columns: Vec<Vec<_>> = (0..section_count)
+            .map(|y| {
+                present
+                    .iter()
+                    .map(|segment| &segment.block_sections.sections[y])
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let biome_columns: Vec<Vec<_>> = (0..section_count)
+            .map(|y| {
+                present
+                    .iter()
+                    .map(|segment| &segment.biome_sections.sections[y])
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for column in &block_columns {
+            inner_handle.serialize_column_headers(column, true);
+        }
+        for column in &biome_columns {
+            inner_handle.serialize_column_headers(column, false);
         }
 
-        for y in 0..section_count {
-            let column: Vec<_> = present
-                .iter()
-                .map(|segment| &segment.biome_sections.sections[y])
-                .collect();
-            inner_handle.serialize_column(&column, false);
+        for column in &block_columns {
+            for section in column {
+                for snapshot in &section.reverse_deltas {
+                    inner_handle.serialize_snapshot_body(snapshot);
+                }
+            }
+        }
+        for column in &biome_columns {
+            for section in column {
+                for snapshot in &section.reverse_deltas {
+                    inner_handle.serialize_snapshot_body(snapshot);
+                }
+            }
         }
 
         for segment in &present {
             inner_handle.serialize_segment_info(&segment.info);
         }
-
         for segment in &present {
             inner_handle.serialize_tile_entities(&segment.tile_entities);
         }

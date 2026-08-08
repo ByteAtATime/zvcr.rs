@@ -107,11 +107,14 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub(crate) fn deserialize_column<const UNPACKED_SIZE: usize>(
+    pub(crate) fn deserialize_column_headers<const UNPACKED_SIZE: usize>(
         &mut self,
         column_length: usize,
         palette_table: &[Palette],
-    ) -> Result<Vec<PackedDeltaData<UNPACKED_SIZE>>, ReadError> {
+    ) -> Result<(
+        Vec<PackedDeltaData<UNPACKED_SIZE>>,
+        Vec<(usize, usize, usize, bool)>,
+    ), ReadError> {
         let mut counts = Vec::with_capacity(column_length);
         for _ in 0..column_length {
             let delta_length = self.read_u64()?;
@@ -194,36 +197,41 @@ impl ReadHandle {
             }
         }
 
-        for (section_index, delta_index, packed_len, active) in body_plan {
-            if !active {
-                self.pos += packed_len * std::mem::size_of::<u64>();
-                continue;
-            }
+        Ok((sections, body_plan))
+    }
 
-            let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
-            {
-                let byte_slice = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        packed_longs.as_mut_ptr() as *mut u8,
-                        packed_len * std::mem::size_of::<u64>(),
-                    )
-                };
-                self.read_exact(byte_slice)?;
-            }
-            #[cfg(not(target_endian = "little"))]
-            {
-                for v in packed_longs.iter_mut() {
-                    *v = v.to_le();
-                }
-            }
+    pub(crate) fn read_snapshot_body_into<const UNPACKED_SIZE: usize>(
+        &mut self,
+        packed_len: usize,
+        active: bool,
+        snapshot: &mut PackedSnapshot<UNPACKED_SIZE>,
+    ) -> Result<(), ReadError> {
+        if !active {
+            self.pos += packed_len * std::mem::size_of::<u64>();
+            return Ok(());
+        }
 
-            let snapshot = &mut sections[section_index].reverse_deltas[delta_index];
-            if let Data::Paletted(paletted) = &mut snapshot.data.data {
-                paletted.packed_long_array = packed_longs;
+        let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
+        {
+            let byte_slice = unsafe {
+                std::slice::from_raw_parts_mut(
+                    packed_longs.as_mut_ptr() as *mut u8,
+                    packed_len * std::mem::size_of::<u64>(),
+                )
+            };
+            self.read_exact(byte_slice)?;
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            for v in packed_longs.iter_mut() {
+                *v = v.to_le();
             }
         }
 
-        Ok(sections)
+        if let Data::Paletted(paletted) = &mut snapshot.data.data {
+            paletted.packed_long_array = packed_longs;
+        }
+        Ok(())
     }
 
     pub(crate) fn deserialize_segment_state(&mut self) -> Result<SegmentState, ReadError> {
@@ -324,50 +332,76 @@ impl ReadHandle {
             *v = self.read_u8()? != 0;
         }
 
+        let present_indices: Vec<usize> = (0..SEGMENTS_PER_REGION).filter(|&i| present[i]).collect();
+        let present_count = present_indices.len();
         let section_count = self.ctx.section_count;
-        let present_count = present.iter().filter(|&&p| p).count();
+
         let mut segments: Vec<Option<Segment>> = (0..SEGMENTS_PER_REGION).map(|_| None).collect();
-        for i in 0..SEGMENTS_PER_REGION {
-            if present[i] {
-                segments[i] = Some(Segment::with_section_count(section_count));
+        for &i in &present_indices {
+            segments[i] = Some(Segment::with_section_count(section_count));
+        }
+
+        let mut block_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>>> =
+            Vec::with_capacity(section_count);
+        let mut block_body_plans: Vec<Vec<(usize, usize, usize, bool)>> =
+            Vec::with_capacity(section_count);
+        for _ in 0..section_count {
+            let (column, plan) =
+                self.deserialize_column_headers::<SECTION_SIZE_BLOCKS>(present_count, &block_table)?;
+            block_columns.push(column);
+            block_body_plans.push(plan);
+        }
+
+        let mut biome_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BIOMES>>> =
+            Vec::with_capacity(section_count);
+        let mut biome_body_plans: Vec<Vec<(usize, usize, usize, bool)>> =
+            Vec::with_capacity(section_count);
+        for _ in 0..section_count {
+            let (column, plan) =
+                self.deserialize_column_headers::<SECTION_SIZE_BIOMES>(present_count, &biome_table)?;
+            biome_columns.push(column);
+            biome_body_plans.push(plan);
+        }
+
+        for y in 0..section_count {
+            for k in 0..present_count {
+                let i = present_indices[k];
+                let seg = segments[i].as_mut().unwrap();
+                seg.block_sections.sections[y] = std::mem::take(&mut block_columns[y][k]);
+            }
+        }
+        for y in 0..section_count {
+            for k in 0..present_count {
+                let i = present_indices[k];
+                let seg = segments[i].as_mut().unwrap();
+                seg.biome_sections.sections[y] = std::mem::take(&mut biome_columns[y][k]);
             }
         }
 
         for y in 0..section_count {
-            let mut column =
-                self.deserialize_column::<SECTION_SIZE_BLOCKS>(present_count, &block_table)?;
-            let mut k = 0;
-            for i in 0..SEGMENTS_PER_REGION {
-                if present[i] {
-                    let seg = segments[i].as_mut().unwrap();
-                    seg.block_sections.sections[y] = std::mem::take(&mut column[k]);
-                    k += 1;
-                }
+            for &(k, j, packed_len, active) in &block_body_plans[y] {
+                let i = present_indices[k];
+                let seg = segments[i].as_mut().unwrap();
+                let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
+                self.read_snapshot_body_into(packed_len, active, snapshot)?;
             }
         }
         for y in 0..section_count {
-            let mut column =
-                self.deserialize_column::<SECTION_SIZE_BIOMES>(present_count, &biome_table)?;
-            let mut k = 0;
-            for i in 0..SEGMENTS_PER_REGION {
-                if present[i] {
-                    let seg = segments[i].as_mut().unwrap();
-                    seg.biome_sections.sections[y] = std::mem::take(&mut column[k]);
-                    k += 1;
-                }
+            for &(k, j, packed_len, active) in &biome_body_plans[y] {
+                let i = present_indices[k];
+                let seg = segments[i].as_mut().unwrap();
+                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
+                self.read_snapshot_body_into(packed_len, active, snapshot)?;
             }
         }
-        for i in 0..SEGMENTS_PER_REGION {
-            if present[i] {
-                let seg = segments[i].as_mut().unwrap();
-                seg.info = self.deserialize_segment_info()?;
-            }
+
+        for &i in &present_indices {
+            let seg = segments[i].as_mut().unwrap();
+            seg.info = self.deserialize_segment_info()?;
         }
-        for i in 0..SEGMENTS_PER_REGION {
-            if present[i] {
-                let seg = segments[i].as_mut().unwrap();
-                seg.tile_entities = self.deserialize_tile_entities()?;
-            }
+        for &i in &present_indices {
+            let seg = segments[i].as_mut().unwrap();
+            seg.tile_entities = self.deserialize_tile_entities()?;
         }
 
         for i in 0..SEGMENTS_PER_REGION {
