@@ -83,7 +83,7 @@ pub fn reconstruct_tile_entities(data: &DeltaTileEntityData) -> Vec<Snapshot<Til
 pub type BlockSectionGrid = [u16; SECTION_SIZE_BLOCKS];
 pub type BiomeSectionGrid = [u16; SECTION_SIZE_BIOMES];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentData {
     pub block_sections: Vec<SectionHistory<BlockSectionGrid>>,
     pub biome_sections: Vec<SectionHistory<BiomeSectionGrid>>,
@@ -91,7 +91,7 @@ pub struct SegmentData {
     pub tile_entities: Vec<Snapshot<TileEntityList>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionData {
     pub version: Version,
     pub protocol_version: u16,
@@ -149,35 +149,36 @@ mod tests {
             dimension_type: DimensionType::Overworld,
         };
         let file = read_file_at(dir, &location, 0).unwrap();
-        let segment = file.region.segments.iter().flatten().next().unwrap();
 
-        for section in segment.block_sections.active() {
-            let history = reconstruct_history(section);
-            for (i, snapshot) in history.iter().enumerate() {
-                let expected = section
-                    .snapshot_before(section.reverse_deltas[i].timestamp)
+        for segment in file.region.segments.iter().flatten() {
+            for section in segment.block_sections.active() {
+                let history = reconstruct_history(section);
+                for (i, snapshot) in history.iter().enumerate() {
+                    let expected = section
+                        .snapshot_before(section.reverse_deltas[i].timestamp)
+                        .unwrap();
+                    assert_eq!(snapshot.data, expected);
+                }
+            }
+
+            for section in segment.biome_sections.active() {
+                let history = reconstruct_history(section);
+                for (i, snapshot) in history.iter().enumerate() {
+                    let expected = section
+                        .snapshot_before(section.reverse_deltas[i].timestamp)
+                        .unwrap();
+                    assert_eq!(snapshot.data, expected);
+                }
+            }
+
+            let tile_history = reconstruct_tile_entities(&segment.tile_entities);
+            for (i, snapshot) in tile_history.iter().enumerate() {
+                let expected = segment
+                    .tile_entities
+                    .snapshot_before(segment.tile_entities.reverse_deltas[i].timestamp)
                     .unwrap();
                 assert_eq!(snapshot.data, expected);
             }
-        }
-
-        for section in segment.biome_sections.active() {
-            let history = reconstruct_history(section);
-            for (i, snapshot) in history.iter().enumerate() {
-                let expected = section
-                    .snapshot_before(section.reverse_deltas[i].timestamp)
-                    .unwrap();
-                assert_eq!(snapshot.data, expected);
-            }
-        }
-
-        let tile_history = reconstruct_tile_entities(&segment.tile_entities);
-        for (i, snapshot) in tile_history.iter().enumerate() {
-            let expected = segment
-                .tile_entities
-                .snapshot_before(segment.tile_entities.reverse_deltas[i].timestamp)
-                .unwrap();
-            assert_eq!(snapshot.data, expected);
         }
     }
 }
