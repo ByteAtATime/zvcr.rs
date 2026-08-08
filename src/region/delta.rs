@@ -29,13 +29,7 @@ impl<const UNPACKED_SIZE: usize> DeltaSequence for PackedDeltaData<UNPACKED_SIZE
         }
 
         for delta in self.reverse_deltas.iter().skip(1) {
-            let unpacked = delta.data.unpack();
-            for j in 0..UNPACKED_SIZE {
-                let state = unpacked[j];
-                if state != STATE_UNCHANGED {
-                    latest_unpacked[j] = state;
-                }
-            }
+            delta.data.unpack_delta_into(&mut latest_unpacked);
             if timestamp >= delta.timestamp {
                 break;
             }
