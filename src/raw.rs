@@ -36,3 +36,44 @@ pub fn reconstruct_history<const N: usize>(
     }
     history
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dimension::DimensionType;
+    use crate::io::file_location::RegionLocation;
+    use crate::io::serialize::reader::read_file_at;
+    use crate::region::delta_sequence::DeltaSequence;
+
+    #[test]
+    fn reconstruct_history_matches_snapshot_before() {
+        let dir = std::path::Path::new("test_files");
+        let location = RegionLocation {
+            rx: -1,
+            rz: -1,
+            dimension_type: DimensionType::Overworld,
+        };
+        let file = read_file_at(dir, &location, 0).unwrap();
+        let segment = file.region.segments.iter().flatten().next().unwrap();
+
+        for section in segment.block_sections.active() {
+            let history = reconstruct_history(section);
+            for (i, snapshot) in history.iter().enumerate() {
+                let expected = section
+                    .snapshot_before(section.reverse_deltas[i].timestamp)
+                    .unwrap();
+                assert_eq!(snapshot.data, expected);
+            }
+        }
+
+        for section in segment.biome_sections.active() {
+            let history = reconstruct_history(section);
+            for (i, snapshot) in history.iter().enumerate() {
+                let expected = section
+                    .snapshot_before(section.reverse_deltas[i].timestamp)
+                    .unwrap();
+                assert_eq!(snapshot.data, expected);
+            }
+        }
+    }
+}
