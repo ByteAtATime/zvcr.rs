@@ -1,5 +1,5 @@
 use crate::definitions::*;
-use crate::region::palette::{Palette, build_palette};
+use crate::region::palette::{Palette, PackScratch, build_palette_with};
 use crate::region::unpacked_view::UnpackedData;
 
 pub type LongArray = Vec<u64>;
@@ -34,8 +34,15 @@ pub struct PackedData<const UNPACKED_SIZE: usize> {
 
 impl<const UNPACKED_SIZE: usize> PackedData<UNPACKED_SIZE> {
     pub fn pack(section_data: &UnpackedData<UNPACKED_SIZE>) -> Self {
-        let mut indices = [0u8; u16::MAX as usize + 1];
-        let palette = build_palette(section_data, &mut indices);
+        let mut scratch = PackScratch::new();
+        Self::pack_with(section_data, &mut scratch)
+    }
+
+    pub fn pack_with(
+        section_data: &UnpackedData<UNPACKED_SIZE>,
+        scratch: &mut PackScratch,
+    ) -> Self {
+        let palette = build_palette_with(section_data, scratch);
 
         if palette.length() == 1 {
             return Self {
@@ -43,8 +50,9 @@ impl<const UNPACKED_SIZE: usize> PackedData<UNPACKED_SIZE> {
             };
         }
 
-        let mut paletted_data = PalettedData::new(palette.clone());
         let bits = palette.bits_per_entry as u8;
+        let direct = palette.direct();
+        let mut paletted_data = PalettedData::new(palette);
         let mask = (1u64 << bits) - 1;
         let mut unpacked_index = 0;
 
@@ -56,10 +64,10 @@ impl<const UNPACKED_SIZE: usize> PackedData<UNPACKED_SIZE> {
                     break;
                 }
                 let mut slice = section_data[unpacked_index];
-                if !palette.direct() {
-                    slice = indices[slice as usize] as u16;
+                if !direct {
+                    slice = scratch.indices[slice as usize] as u16;
                 }
-                cell = (cell & !(mask << bit_index)) | ((slice as u64 & mask) << bit_index);
+                cell |= (slice as u64 & mask) << bit_index;
                 unpacked_index += 1;
                 bit_index += bits;
             }

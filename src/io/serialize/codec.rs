@@ -4,6 +4,7 @@ use crate::raw::{
 };
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{PackedData, PackedSnapshot};
+use crate::region::palette::PackScratch;
 use crate::region::segment::Segment;
 use crate::region::tile_entities::{DeltaTileEntityData, TileEntity, TileEntityList};
 
@@ -28,10 +29,11 @@ pub(crate) fn reconstruct_segment(segment: &Segment) -> SegmentData {
 
 fn encode_history<const N: usize>(history: &SectionHistory<[u16; N]>) -> PackedDeltaData<N> {
     let mut packed = PackedDeltaData::default();
+    let mut scratch = PackScratch::new();
     for snap in history.iter().rev() {
         packed
             .insert_snapshot(PackedSnapshot {
-                data: PackedData::pack(&snap.data),
+                data: PackedData::pack_with(&snap.data, &mut scratch),
                 timestamp: snap.timestamp,
             })
             .expect("encode_history: non-canonical input");
