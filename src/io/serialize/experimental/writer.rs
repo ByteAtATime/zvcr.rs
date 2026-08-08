@@ -125,11 +125,9 @@ impl WriteHandle {
             put_u64_le(&mut self.data, list_delta.timestamp as u64);
             put_u64_le(&mut self.data, list_delta.deltas.len() as u64);
 
-            let mut sorted_positions: Vec<_> = list_delta.deltas.keys().cloned().collect();
-            sorted_positions.sort_by_key(|pos| pos.packed());
-
-            for pos in sorted_positions {
-                let delta = &list_delta.deltas[&pos];
+            let mut sorted_entries: Vec<_> = list_delta.deltas.iter().collect();
+            sorted_entries.sort_unstable_by_key(|(pos, _)| pos.packed());
+            for (pos, delta) in sorted_entries {
                 put_u32_le(&mut self.data, pos.packed());
                 match delta {
                     TileEntityDelta::Erase => {
