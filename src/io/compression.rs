@@ -9,16 +9,17 @@ pub fn default_compression_threads() -> u32 {
         / 2) as u32
 }
 
-pub fn compress_zstd(
-    input: &[u8],
+pub fn compress_zstd_parts(
+    parts: &[&[u8]],
     compression_level: i32,
     compression_threads: u32,
 ) -> Result<Vec<u8>, String> {
+    let total_len: usize = parts.iter().map(|p| p.len()).sum();
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), compression_level)
         .map_err(|e| format!("Failed to create ZSTD encoder: {e}"))?;
 
     encoder
-        .set_pledged_src_size(Some(input.len() as u64))
+        .set_pledged_src_size(Some(total_len as u64))
         .map_err(|e| format!("Failed to set pledged source size: {e}"))?;
 
     if compression_threads > 0 {
@@ -30,9 +31,11 @@ pub fn compress_zstd(
     }
 
     use std::io::Write;
-    encoder
-        .write_all(input)
-        .map_err(|e| format!("Compression write error: {e}"))?;
+    for part in parts {
+        encoder
+            .write_all(part)
+            .map_err(|e| format!("Compression write error: {e}"))?;
+    }
 
     encoder
         .finish()

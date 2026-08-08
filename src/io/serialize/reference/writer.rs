@@ -176,12 +176,15 @@ impl WriteHandle {
             }
         }
 
-        let mut body = Vec::with_capacity(inner_handle.data.len());
-        Self::serialize_palette_table(&inner_handle.block_palette_table, &mut body);
-        Self::serialize_palette_table(&inner_handle.biome_palette_table, &mut body);
-        put_bytes(&mut body, &inner_handle.data);
+        let mut palette_tables = Vec::new();
+        Self::serialize_palette_table(&inner_handle.block_palette_table, &mut palette_tables);
+        Self::serialize_palette_table(&inner_handle.biome_palette_table, &mut palette_tables);
 
-        let compressed = compress_zstd(&body, self.compression_level, self.compression_threads)?;
+        let compressed = compress_zstd_parts(
+            &[&palette_tables, &inner_handle.data],
+            self.compression_level,
+            self.compression_threads,
+        )?;
         put_bytes(&mut self.data, &compressed);
         Ok(())
     }
