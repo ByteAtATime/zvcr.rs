@@ -59,18 +59,17 @@ impl Reader for ExperimentalReader {
 
 pub struct ExperimentalWriter {
     level: i32,
-    threads: u32,
 }
 
 impl ExperimentalWriter {
-    pub fn new(level: i32, threads: u32) -> Self {
-        Self { level, threads }
+    pub fn new(level: i32) -> Self {
+        Self { level }
     }
 }
 
 impl Writer for ExperimentalWriter {
     fn to_bytes(&self, data: &RegionData) -> Result<Vec<u8>, String> {
-        serialize_file_to_vec(&encode_region(data), self.level, self.threads)
+        serialize_file_to_vec(&encode_region(data), self.level)
     }
 }
 
@@ -81,7 +80,7 @@ mod tests {
     use super::*;
     use crate::definitions::SEGMENTS_PER_REGION;
     use crate::dimension::DimensionType;
-    use crate::io::compression::{ZSTD_COMPRESSION_LEVEL_DEFAULT, default_compression_threads};
+    use crate::io::compression::ZSTD_COMPRESSION_LEVEL_DEFAULT;
     use crate::io::file_location::RegionLocation;
     use crate::raw::{reconstruct_history, reconstruct_tile_entities};
     use crate::region::delta_sequence::DeltaSequence;
@@ -141,20 +140,8 @@ mod tests {
 
         let tmp_original = std::env::temp_dir().join("zvcr_encode_original.bak");
         let tmp_encoded = std::env::temp_dir().join("zvcr_encode_encoded.bak");
-        write_file(
-            &file,
-            &tmp_original,
-            ZSTD_COMPRESSION_LEVEL_DEFAULT,
-            default_compression_threads(),
-        )
-        .unwrap();
-        write_file(
-            &encoded,
-            &tmp_encoded,
-            ZSTD_COMPRESSION_LEVEL_DEFAULT,
-            default_compression_threads(),
-        )
-        .unwrap();
+        write_file(&file, &tmp_original, ZSTD_COMPRESSION_LEVEL_DEFAULT).unwrap();
+        write_file(&encoded, &tmp_encoded, ZSTD_COMPRESSION_LEVEL_DEFAULT).unwrap();
         let a = std::fs::read(&tmp_original).unwrap();
         let b = std::fs::read(&tmp_encoded).unwrap();
         assert_eq!(a, b);

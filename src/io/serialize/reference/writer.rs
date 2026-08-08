@@ -1,8 +1,8 @@
+use super::File;
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
-use crate::io::serialize::primitives::*;
-use super::File;
 use crate::io::serialize::context::Context;
+use crate::io::serialize::primitives::*;
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{Data, PackedSnapshot};
 use crate::region::palette::{DIRECT_PALETTE, Palette};
@@ -18,7 +18,6 @@ pub(crate) type PaletteTable = AHashMap<Palette, usize>;
 
 pub(crate) struct WriteHandle {
     pub(crate) compression_level: i32,
-    pub(crate) compression_threads: u32,
     pub(crate) ctx: Context,
     pub(crate) data: Vec<u8>,
     block_palette_table: PaletteTable,
@@ -26,10 +25,9 @@ pub(crate) struct WriteHandle {
 }
 
 impl WriteHandle {
-    pub(crate) fn new(protocol_version: u16, compression_level: i32, compression_threads: u32) -> Self {
+    pub(crate) fn new(protocol_version: u16, compression_level: i32) -> Self {
         Self {
             compression_level,
-            compression_threads,
             ctx: Context {
                 section_count: 0,
                 protocol_version,
@@ -163,7 +161,6 @@ impl WriteHandle {
         let mut inner_handle = WriteHandle::new(
             self.ctx.protocol_version,
             self.compression_level,
-            self.compression_threads,
         );
         inner_handle.ctx = self.ctx.clone();
 
@@ -183,7 +180,6 @@ impl WriteHandle {
         let compressed = compress_zstd_parts(
             &[&palette_tables, &inner_handle.data],
             self.compression_level,
-            self.compression_threads,
         )?;
         put_bytes(&mut self.data, &compressed);
         Ok(())
@@ -203,12 +199,10 @@ impl WriteHandle {
 pub(crate) fn serialize_file_to_vec(
     file: &File,
     compression_level: i32,
-    compression_threads: u32,
 ) -> Result<Vec<u8>, String> {
     let mut handle = WriteHandle::new(
         file.protocol_version,
         compression_level,
-        compression_threads,
     );
     handle.serialize_file(file)?;
     Ok(handle.data)
@@ -219,9 +213,8 @@ pub(crate) fn write_file(
     file: &File,
     filepath: &Path,
     compression_level: i32,
-    compression_threads: u32,
 ) -> Result<usize, String> {
-    let bytes = serialize_file_to_vec(file, compression_level, compression_threads)?;
+    let bytes = serialize_file_to_vec(file, compression_level)?;
     fs::write(filepath, &bytes).map_err(|e| format!("Failed to write file to disk: {e}"))?;
     Ok(bytes.len())
 }
@@ -232,7 +225,6 @@ pub(crate) fn write_file_at(
     parent_directory: &Path,
     location: &RegionLocation,
     compression_level: i32,
-    compression_threads: u32,
 ) -> Result<usize, String> {
     let target_dir = location.directory(parent_directory);
     fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directories: {e}"))?;
@@ -241,6 +233,5 @@ pub(crate) fn write_file_at(
         file,
         &location.file_path(parent_directory),
         compression_level,
-        compression_threads,
     )
 }

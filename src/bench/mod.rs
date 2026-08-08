@@ -59,7 +59,7 @@ pub fn run(root: &Path, verify: bool) {
     println!("Discovered {total} region files");
 
     let ref_arc = Arc::new(ReferenceReader::new(0));
-    let exp_w_arc = Arc::new(ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT, 0));
+    let exp_w_arc = Arc::new(ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT));
     let exp_r_arc = Arc::new(ExperimentalReader::new(0));
 
     let progress = Arc::new(Progress {

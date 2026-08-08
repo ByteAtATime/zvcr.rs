@@ -9,9 +9,9 @@ use crate::raw::RegionData;
 use crate::region::segment::Region;
 use std::sync::Arc;
 
-use super::codec::{encode_segment, reconstruct_segment};
 use self::reader::ReadHandle;
 use self::writer::serialize_file_to_vec;
+use super::codec::{encode_segment, reconstruct_segment};
 
 pub(crate) fn reconstruct_region(file: &File) -> RegionData {
     RegionData {
@@ -19,7 +19,9 @@ pub(crate) fn reconstruct_region(file: &File) -> RegionData {
         protocol_version: file.protocol_version,
         dimension: file.dimension_type,
         segments: std::array::from_fn(|i| {
-            file.region.segments[i].as_ref().map(|arc| reconstruct_segment(arc))
+            file.region.segments[i]
+                .as_ref()
+                .map(|arc| reconstruct_segment(arc))
         }),
     }
 }
@@ -57,29 +59,28 @@ impl Reader for ReferenceReader {
 
 pub struct ReferenceWriter {
     level: i32,
-    threads: u32,
 }
 
 impl ReferenceWriter {
-    pub fn new(level: i32, threads: u32) -> Self {
-        Self { level, threads }
+    pub fn new(level: i32) -> Self {
+        Self { level }
     }
 }
 
 impl Writer for ReferenceWriter {
     fn to_bytes(&self, data: &RegionData) -> Result<Vec<u8>, String> {
-        serialize_file_to_vec(&encode_region(data), self.level, self.threads)
+        serialize_file_to_vec(&encode_region(data), self.level)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::reader::read_file_at;
     use super::writer::write_file;
+    use super::*;
     use crate::definitions::SEGMENTS_PER_REGION;
     use crate::dimension::DimensionType;
-    use crate::io::compression::{ZSTD_COMPRESSION_LEVEL_DEFAULT, default_compression_threads};
+    use crate::io::compression::ZSTD_COMPRESSION_LEVEL_DEFAULT;
     use crate::io::file_location::RegionLocation;
     use crate::raw::{reconstruct_history, reconstruct_tile_entities};
     use crate::region::delta_sequence::DeltaSequence;
@@ -139,20 +140,8 @@ mod tests {
 
         let tmp_original = std::env::temp_dir().join("zvcr_encode_original.bak");
         let tmp_encoded = std::env::temp_dir().join("zvcr_encode_encoded.bak");
-        write_file(
-            &file,
-            &tmp_original,
-            ZSTD_COMPRESSION_LEVEL_DEFAULT,
-            default_compression_threads(),
-        )
-        .unwrap();
-        write_file(
-            &encoded,
-            &tmp_encoded,
-            ZSTD_COMPRESSION_LEVEL_DEFAULT,
-            default_compression_threads(),
-        )
-        .unwrap();
+        write_file(&file, &tmp_original, ZSTD_COMPRESSION_LEVEL_DEFAULT).unwrap();
+        write_file(&encoded, &tmp_encoded, ZSTD_COMPRESSION_LEVEL_DEFAULT).unwrap();
         let a = std::fs::read(&tmp_original).unwrap();
         let b = std::fs::read(&tmp_encoded).unwrap();
         assert_eq!(a, b);
@@ -172,7 +161,10 @@ mod tests {
         assert_eq!(encoded.version, file.version);
         assert_eq!(encoded.protocol_version, file.protocol_version);
         assert_eq!(encoded.dimension_type, file.dimension_type);
-        assert_eq!(encoded.region.protocol_version, file.region.protocol_version);
+        assert_eq!(
+            encoded.region.protocol_version,
+            file.region.protocol_version
+        );
         for i in 0..SEGMENTS_PER_REGION {
             match (&encoded.region.segments[i], &file.region.segments[i]) {
                 (None, None) => {}
@@ -191,7 +183,10 @@ mod tests {
                         assert_eq!(a.biome_sections.sections[s], b.biome_sections.sections[s]);
                     }
                     assert_eq!(a.info.reverse_deltas, b.info.reverse_deltas);
-                    assert_eq!(a.tile_entities.reverse_deltas, b.tile_entities.reverse_deltas);
+                    assert_eq!(
+                        a.tile_entities.reverse_deltas,
+                        b.tile_entities.reverse_deltas
+                    );
                 }
                 _ => panic!("segment {i} presence mismatch"),
             }
