@@ -1,6 +1,5 @@
 use crate::definitions::*;
 use crate::time_utils::find_nearest_timestamp;
-use std::hash::{Hash, Hasher};
 
 pub type LongArray = Vec<u64>;
 pub type UnpackedData<const UNPACKED_SIZE: usize> = [SegmentAtom; UNPACKED_SIZE];
@@ -82,25 +81,10 @@ pub fn bits_per_entry(palette_length: usize) -> usize {
 
 pub type VectorPalette = Vec<SegmentAtom>;
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Palette {
     pub palette: VectorPalette,
     pub bits_per_entry: usize,
-}
-
-impl PartialEq for Palette {
-    fn eq(&self, other: &Self) -> bool {
-        self.bits_per_entry == other.bits_per_entry && self.palette == other.palette
-    }
-}
-
-impl Hash for Palette {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.bits_per_entry.hash(state);
-        for atom in &self.palette {
-            atom.hash(state);
-        }
-    }
 }
 
 impl Palette {
