@@ -1,3 +1,4 @@
+use crate::definitions::STATE_UNCHANGED;
 use crate::raw::{
     SegmentData, SectionHistory, Snapshot, reconstruct_history,
     reconstruct_tile_entities,
@@ -27,18 +28,36 @@ pub(crate) fn reconstruct_segment(segment: &Segment) -> SegmentData {
     }
 }
 
-fn encode_history<const N: usize>(history: &SectionHistory<[u16; N]>) -> PackedDeltaData<N> {
-    let mut packed = PackedDeltaData::default();
-    let mut scratch = PackScratch::new();
-    for snap in history.iter().rev() {
-        packed
-            .insert_snapshot(PackedSnapshot {
-                data: PackedData::pack_with(&snap.data, &mut scratch),
-                timestamp: snap.timestamp,
-            })
-            .expect("encode_history: non-canonical input");
+fn encode_history<const N: usize>(
+    history: &SectionHistory<[u16; N]>,
+    scratch: &mut PackScratch,
+) -> PackedDeltaData<N> {
+    let mut reverse_deltas = Vec::with_capacity(history.len());
+    if history.is_empty() {
+        return PackedDeltaData { reverse_deltas };
     }
-    packed
+
+    reverse_deltas.push(PackedSnapshot {
+        data: PackedData::pack_with(&history[0].data, scratch),
+        timestamp: history[0].timestamp,
+    });
+
+    for k in 1..history.len() {
+        let prev = &history[k - 1].data;
+        let curr = &history[k].data;
+        let mut delta = [STATE_UNCHANGED; N];
+        for i in 0..N {
+            if curr[i] != prev[i] {
+                delta[i] = curr[i];
+            }
+        }
+        reverse_deltas.push(PackedSnapshot {
+            data: PackedData::pack_with(&delta, scratch),
+            timestamp: history[k].timestamp,
+        });
+    }
+
+    PackedDeltaData { reverse_deltas }
 }
 
 fn encode_tile_entities(history: &[Snapshot<TileEntityList>]) -> DeltaTileEntityData {
@@ -55,9 +74,12 @@ pub(crate) fn encode_segment(sd: &SegmentData) -> Segment {
     debug_assert_eq!(sd.block_sections.len(), sd.biome_sections.len());
     let section_count = sd.block_sections.len();
     let mut segment = Segment::with_section_count(section_count);
+    let mut scratch = PackScratch::new();
     for i in 0..section_count {
-        segment.block_sections.sections[i] = encode_history(&sd.block_sections[i]);
-        segment.biome_sections.sections[i] = encode_history(&sd.biome_sections[i]);
+        segment.block_sections.sections[i] =
+            encode_history(&sd.block_sections[i], &mut scratch);
+        segment.biome_sections.sections[i] =
+            encode_history(&sd.biome_sections[i], &mut scratch);
     }
     segment.info.reverse_deltas = sd.states.clone();
     segment.tile_entities = encode_tile_entities(&sd.tile_entities);
