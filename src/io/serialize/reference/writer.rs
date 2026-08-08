@@ -1,5 +1,6 @@
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
+use crate::io::serialize::primitives::*;
 use super::File;
 use crate::io::serialize::context::Context;
 use crate::region::delta::PackedDeltaData;
@@ -12,26 +13,6 @@ use crate::version::*;
 use ahash::AHashMap;
 use std::fs;
 use std::path::Path;
-
-fn put_u8(buf: &mut Vec<u8>, v: u8) {
-    buf.push(v);
-}
-
-fn put_u16_le(buf: &mut Vec<u8>, v: u16) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn put_u32_le(buf: &mut Vec<u8>, v: u32) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn put_u64_le(buf: &mut Vec<u8>, v: u64) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
-    buf.extend_from_slice(v);
-}
 
 pub(crate) type PaletteTable = AHashMap<Palette, usize>;
 
