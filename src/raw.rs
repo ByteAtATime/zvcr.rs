@@ -1,5 +1,13 @@
-use crate::definitions::STATE_UNCHANGED;
+use crate::definitions::{
+    SECTION_SIZE_BLOCKS, SECTION_SIZE_BIOMES, SEGMENTS_PER_REGION, STATE_UNCHANGED,
+};
+use crate::dimension::DimensionType;
+use crate::io::file_type::File;
 use crate::region::delta::PackedDeltaData;
+use crate::region::segment::Segment;
+use crate::region::segment_info::SegmentState;
+use crate::region::tile_entities::TileEntityList;
+use crate::version::Version;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot<T> {
@@ -35,6 +43,58 @@ pub fn reconstruct_history<const N: usize>(
         });
     }
     history
+}
+
+pub type BlockSectionGrid = [u16; SECTION_SIZE_BLOCKS];
+pub type BiomeSectionGrid = [u16; SECTION_SIZE_BIOMES];
+
+#[derive(Debug, Clone)]
+pub struct SegmentData {
+    pub block_sections: Vec<SectionHistory<BlockSectionGrid>>,
+    pub biome_sections: Vec<SectionHistory<BiomeSectionGrid>>,
+    pub states: Vec<SegmentState>,
+    pub tile_entities: Vec<Snapshot<TileEntityList>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegionData {
+    pub version: Version,
+    pub protocol_version: u16,
+    pub dimension: DimensionType,
+    pub segments: [Option<SegmentData>; SEGMENTS_PER_REGION],
+}
+
+pub fn reconstruct_segment(segment: &Segment) -> SegmentData {
+    SegmentData {
+        block_sections: segment
+            .block_sections
+            .active()
+            .iter()
+            .map(reconstruct_history)
+            .collect(),
+        biome_sections: segment
+            .biome_sections
+            .active()
+            .iter()
+            .map(reconstruct_history)
+            .collect(),
+        states: Vec::new(),
+        tile_entities: Vec::new(),
+    }
+}
+
+pub fn reconstruct_region(file: &File) -> RegionData {
+    RegionData {
+        version: file.version,
+        protocol_version: file.protocol_version,
+        dimension: file.dimension_type,
+        segments: std::array::from_fn(|i| {
+            file.region
+                .segments[i]
+                .as_ref()
+                .map(|arc| reconstruct_segment(arc))
+        }),
+    }
 }
 
 #[cfg(test)]

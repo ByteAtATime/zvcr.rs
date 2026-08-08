@@ -44,37 +44,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Write took {:?}", t2.duration_since(t1));
     println!("Wrote {bytes_written} bytes");
 
-    let segment = match new_file.region.segments.iter().flatten().next() {
-        Some(segment) => segment,
-        None => {
-            println!("No segments present");
-            return Ok(());
-        }
-    };
+    let t3 = Instant::now();
+    let region_data = raw::reconstruct_region(&new_file);
+    let t4 = Instant::now();
 
-    let block_counts: Vec<usize> = segment
-        .block_sections
-        .active()
+    let present_segments = region_data.segments.iter().filter(|s| s.is_some()).count();
+    let block_snapshots: usize = region_data
+        .segments
         .iter()
-        .map(|section| raw::reconstruct_history(section).len())
-        .collect();
-    let biome_counts: Vec<usize> = segment
-        .biome_sections
-        .active()
+        .flatten()
+        .map(|segment| {
+            segment
+                .block_sections
+                .iter()
+                .map(|history| history.len())
+                .sum::<usize>()
+        })
+        .sum();
+    let biome_snapshots: usize = region_data
+        .segments
         .iter()
-        .map(|section| raw::reconstruct_history(section).len())
-        .collect();
-    let first_timestamp = segment
-        .block_sections
-        .active()
-        .first()
-        .and_then(|section| section.reverse_deltas.first())
-        .map(|snapshot| snapshot.timestamp);
+        .flatten()
+        .map(|segment| {
+            segment
+                .biome_sections
+                .iter()
+                .map(|history| history.len())
+                .sum::<usize>()
+        })
+        .sum();
 
-    println!("Section count = {}", segment.section_count);
-    println!("Block snapshot counts = {block_counts:?}");
-    println!("Biome snapshot counts = {biome_counts:?}");
-    println!("First block timestamp = {first_timestamp:?}");
+    println!("Reconstruct took {:?}", t4.duration_since(t3));
+    println!("Present segments = {present_segments}");
+    println!("Total block snapshots = {block_snapshots}");
+    println!("Total biome snapshots = {biome_snapshots}");
 
     Ok(())
 }
