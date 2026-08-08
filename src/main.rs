@@ -48,6 +48,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let region_data = raw::reconstruct_region(&new_file);
     let t4 = Instant::now();
 
+    let encoded = raw::encode_region(&region_data);
+    println!(
+        "Re-encoded: {} present segments",
+        encoded.region.segments.iter().flatten().count()
+    );
+
     let present_segments = region_data.segments.iter().filter(|s| s.is_some()).count();
     let block_snapshots: usize = region_data
         .segments

@@ -4,10 +4,12 @@ use crate::definitions::{
 use crate::dimension::DimensionType;
 use crate::io::file_type::File;
 use crate::region::delta::PackedDeltaData;
-use crate::region::segment::Segment;
+use crate::region::packed_data::{PackedData, PackedSnapshot};
+use crate::region::segment::{Region, Segment};
 use crate::region::segment_info::SegmentState;
-use crate::region::tile_entities::{DeltaTileEntityData, TileEntityDelta, TileEntityList};
+use crate::region::tile_entities::{DeltaTileEntityData, TileEntity, TileEntityDelta, TileEntityList};
 use crate::version::Version;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot<T> {
@@ -129,6 +131,55 @@ pub fn reconstruct_region(file: &File) -> RegionData {
                 .as_ref()
                 .map(|arc| reconstruct_segment(arc))
         }),
+    }
+}
+
+pub fn encode_history<const N: usize>(history: &SectionHistory<[u16; N]>) -> PackedDeltaData<N> {
+    let mut packed = PackedDeltaData::default();
+    for snap in history.iter().rev() {
+        packed
+            .insert_snapshot(PackedSnapshot {
+                data: PackedData::pack(&snap.data),
+                timestamp: snap.timestamp,
+            })
+            .expect("encode_history: non-canonical input");
+    }
+    packed
+}
+
+pub fn encode_tile_entities(history: &[Snapshot<TileEntityList>]) -> DeltaTileEntityData {
+    let mut data = DeltaTileEntityData::default();
+    for snap in history.iter().rev() {
+        let entities: Vec<TileEntity> = snap.data.values().cloned().collect();
+        data.insert_snapshot(snap.timestamp, &entities)
+            .expect("encode_tile_entities: non-canonical input");
+    }
+    data
+}
+
+pub fn encode_segment(sd: &SegmentData) -> Segment {
+    debug_assert_eq!(sd.block_sections.len(), sd.biome_sections.len());
+    let section_count = sd.block_sections.len();
+    let mut segment = Segment::with_section_count(section_count);
+    for i in 0..section_count {
+        segment.block_sections.sections[i] = encode_history(&sd.block_sections[i]);
+        segment.biome_sections.sections[i] = encode_history(&sd.biome_sections[i]);
+    }
+    segment.info.reverse_deltas = sd.states.clone();
+    segment.tile_entities = encode_tile_entities(&sd.tile_entities);
+    segment
+}
+
+pub fn encode_region(rd: &RegionData) -> File {
+    let mut region = Region::new(rd.protocol_version);
+    for (i, slot) in rd.segments.iter().enumerate() {
+        region.segments[i] = slot.as_ref().map(|sd| Arc::new(encode_segment(sd)));
+    }
+    File {
+        version: rd.version,
+        protocol_version: rd.protocol_version,
+        dimension_type: rd.dimension,
+        region,
     }
 }
 
