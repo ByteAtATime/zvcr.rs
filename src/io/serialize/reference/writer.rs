@@ -125,11 +125,9 @@ impl WriteHandle {
             put_u64_le(&mut self.data, list_delta.timestamp as u64);
             put_u64_le(&mut self.data, list_delta.deltas.len() as u64);
 
-            let mut sorted_positions: Vec<_> = list_delta.deltas.keys().cloned().collect();
-            sorted_positions.sort_by_key(|pos| pos.packed());
-
-            for pos in sorted_positions {
-                let delta = &list_delta.deltas[&pos];
+            let mut sorted_entries: Vec<_> = list_delta.deltas.iter().collect();
+            sorted_entries.sort_unstable_by_key(|(pos, _)| pos.packed());
+            for (pos, delta) in sorted_entries {
                 put_u32_le(&mut self.data, pos.packed());
                 match delta {
                     TileEntityDelta::Erase => {
@@ -158,10 +156,7 @@ impl WriteHandle {
     }
 
     pub(crate) fn serialize_region(&mut self, region: &Region) -> Result<(), String> {
-        let mut inner_handle = WriteHandle::new(
-            self.ctx.protocol_version,
-            self.compression_level,
-        );
+        let mut inner_handle = WriteHandle::new(self.ctx.protocol_version, self.compression_level);
         inner_handle.ctx = self.ctx.clone();
 
         for segment in &region.segments {
@@ -200,10 +195,7 @@ pub(crate) fn serialize_file_to_vec(
     file: &File,
     compression_level: i32,
 ) -> Result<Vec<u8>, String> {
-    let mut handle = WriteHandle::new(
-        file.protocol_version,
-        compression_level,
-    );
+    let mut handle = WriteHandle::new(file.protocol_version, compression_level);
     handle.serialize_file(file)?;
     Ok(handle.data)
 }
