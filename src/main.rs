@@ -1,4 +1,5 @@
 use std::time::Instant;
+use zvcr::io::serialize::raw_writer::{ReferenceWriter, Writer};
 use zvcr::raw;
 use zvcr::*;
 
@@ -24,12 +25,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backup_path = location
         .directory(test_dir)
         .join(format!("{}.bak", location.file_name()));
-    let write_result = write_file(
-        &new_file,
-        &backup_path,
+
+    let t2 = Instant::now();
+    let region_data = raw::reconstruct_region(&new_file);
+    let t3 = Instant::now();
+
+    let write_result = ReferenceWriter::new(
         ZSTD_COMPRESSION_LEVEL_DEFAULT,
         default_compression_threads(),
-    );
+    )
+    .write(&region_data, &backup_path);
 
     let bytes_written = match write_result {
         Ok(bytes) => bytes,
@@ -38,70 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-    let t2 = Instant::now();
-
-    println!("Read took {:?}", t1.duration_since(t0));
-    println!("Write took {:?}", t2.duration_since(t1));
-    println!("Wrote {bytes_written} bytes");
-
-    let t3 = Instant::now();
-    let region_data = raw::reconstruct_region(&new_file);
     let t4 = Instant::now();
 
-    let encoded = raw::encode_region(&region_data);
-    println!(
-        "Re-encoded: {} present segments",
-        encoded.region.segments.iter().flatten().count()
-    );
-
-    let present_segments = region_data.segments.iter().filter(|s| s.is_some()).count();
-    let block_snapshots: usize = region_data
-        .segments
-        .iter()
-        .flatten()
-        .map(|segment| {
-            segment
-                .block_sections
-                .iter()
-                .map(|history| history.len())
-                .sum::<usize>()
-        })
-        .sum();
-    let biome_snapshots: usize = region_data
-        .segments
-        .iter()
-        .flatten()
-        .map(|segment| {
-            segment
-                .biome_sections
-                .iter()
-                .map(|history| history.len())
-                .sum::<usize>()
-        })
-        .sum();
-
-    let first_segment = region_data.segments.iter().flatten().next();
-    let state_count = first_segment
-        .map(|segment| segment.states.len())
-        .unwrap_or(0);
-    let latest_state = first_segment
-        .and_then(|segment| segment.states.first())
-        .map(|state| format!("{:?} @ {}", state.state_type, state.timestamp))
-        .unwrap_or_else(|| "none".to_string());
-    let tile_snapshot_count = first_segment
-        .map(|segment| segment.tile_entities.len())
-        .unwrap_or(0);
-    let latest_tile_count = first_segment
-        .and_then(|segment| segment.tile_entities.first())
-        .map(|snapshot| snapshot.data.len())
-        .unwrap_or(0);
-
-    println!("Reconstruct took {:?}", t4.duration_since(t3));
-    println!("Present segments = {present_segments}");
-    println!("Total block snapshots = {block_snapshots}");
-    println!("Total biome snapshots = {biome_snapshots}");
-    println!("First segment states: {state_count} (latest: {latest_state})");
-    println!("First segment tile snapshots: {tile_snapshot_count} (latest: {latest_tile_count} entities)");
+    println!("Read took {:?}", t1.duration_since(t0));
+    println!("Reconstruct took {:?}", t3.duration_since(t2));
+    println!("Write took {:?}", t4.duration_since(t3));
+    println!("Wrote {bytes_written} bytes");
 
     Ok(())
 }
