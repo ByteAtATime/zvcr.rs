@@ -2,9 +2,9 @@ use crate::definitions::{
     SECTION_SIZE_BLOCKS, SECTION_SIZE_BIOMES, SEGMENTS_PER_REGION,
 };
 use crate::dimension::DimensionType;
-use crate::region::delta::PackedDeltaData;
+pub use crate::region::delta::PackedDeltaData;
 use crate::region::segment_info::SegmentState;
-use crate::region::tile_entities::{DeltaTileEntityData, TileEntityDelta, TileEntityList};
+pub use crate::region::tile_entities::{DeltaTileEntityData, TileEntityDelta, TileEntityList};
 use crate::version::Version;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,10 +78,10 @@ pub type BiomeSectionGrid = [u16; SECTION_SIZE_BIOMES];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentData {
-    pub block_sections: Vec<SectionHistory<BlockSectionGrid>>,
-    pub biome_sections: Vec<SectionHistory<BiomeSectionGrid>>,
+    pub block_sections: Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>>,
+    pub biome_sections: Vec<PackedDeltaData<SECTION_SIZE_BIOMES>>,
     pub states: Vec<SegmentState>,
-    pub tile_entities: Vec<Snapshot<TileEntityList>>,
+    pub tile_entities: DeltaTileEntityData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
