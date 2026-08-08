@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .directory(test_dir)
         .join(format!("{}.bak", location.file_name()));
 
-    let write_result = ReferenceWriter::new(
+    let write_result = ExperimentalWriter::new(
         ZSTD_COMPRESSION_LEVEL_DEFAULT,
         default_compression_threads(),
     )
