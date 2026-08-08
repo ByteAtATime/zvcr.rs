@@ -53,32 +53,6 @@ impl PackScratch {
     }
 }
 
-pub fn build_palette<const UNPACKED_SIZE: usize>(
-    data: &UnpackedData<UNPACKED_SIZE>,
-    indices: &mut [u8; u16::MAX as usize + 1],
-) -> Palette {
-    let mut palette = Vec::new();
-    let mut unique = vec![false; u16::MAX as usize + 1];
-
-    for &atom in data {
-        if unique[atom as usize] {
-            continue;
-        }
-        unique[atom as usize] = true;
-        if palette.len() >= MAX_INDIRECT_PALETTE_SIZE {
-            return DIRECT_PALETTE;
-        }
-        indices[atom as usize] = palette.len() as u8;
-        palette.push(atom);
-    }
-
-    let bpe = bits_per_entry(palette.len());
-    Palette {
-        palette,
-        bits_per_entry: bpe,
-    }
-}
-
 pub fn build_palette_with<const UNPACKED_SIZE: usize>(
     data: &UnpackedData<UNPACKED_SIZE>,
     scratch: &mut PackScratch,
