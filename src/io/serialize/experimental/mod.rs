@@ -103,67 +103,30 @@ impl Writer for ExperimentalWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::reader::read_file_at;
     use super::writer::write_file;
     use super::*;
     use crate::definitions::SEGMENTS_PER_REGION;
     use crate::dimension::DimensionType;
     use crate::io::compression::ZSTD_COMPRESSION_LEVEL_DEFAULT;
     use crate::io::file_location::RegionLocation;
-    use crate::raw::{reconstruct_history, reconstruct_tile_entities};
-    use crate::region::delta_sequence::DeltaSequence;
+    use crate::{Reader, ReferenceReader};
 
-    #[test]
-    fn reconstruct_history_matches_snapshot_before() {
+    fn read_experimental_file() -> File {
         let dir = std::path::Path::new("test_files");
         let location = RegionLocation {
             rx: -1,
             rz: -1,
             dimension_type: DimensionType::Overworld,
         };
-        let file = read_file_at(dir, &location, 0).unwrap();
-
-        for segment in file.region.segments.iter().flatten() {
-            for section in segment.block_sections.active() {
-                let history = reconstruct_history(section);
-                for (i, snapshot) in history.iter().enumerate() {
-                    let expected = section
-                        .snapshot_before(section.reverse_deltas[i].timestamp)
-                        .unwrap();
-                    assert_eq!(snapshot.data, expected);
-                }
-            }
-
-            for section in segment.biome_sections.active() {
-                let history = reconstruct_history(section);
-                for (i, snapshot) in history.iter().enumerate() {
-                    let expected = section
-                        .snapshot_before(section.reverse_deltas[i].timestamp)
-                        .unwrap();
-                    assert_eq!(snapshot.data, expected);
-                }
-            }
-
-            let tile_history = reconstruct_tile_entities(&segment.tile_entities);
-            for (i, snapshot) in tile_history.iter().enumerate() {
-                let expected = segment
-                    .tile_entities
-                    .snapshot_before(segment.tile_entities.reverse_deltas[i].timestamp)
-                    .unwrap();
-                assert_eq!(snapshot.data, expected);
-            }
-        }
+        let region_data = ReferenceReader::new(0)
+            .read(&location.file_path(dir))
+            .unwrap();
+        encode_region(&region_data)
     }
 
     #[test]
     fn encode_produces_byte_identical_output() {
-        let dir = std::path::Path::new("test_files");
-        let location = RegionLocation {
-            rx: -1,
-            rz: -1,
-            dimension_type: DimensionType::Overworld,
-        };
-        let file = read_file_at(dir, &location, 0).unwrap();
+        let file = read_experimental_file();
         let encoded = encode_region(&reconstruct_region(&file));
 
         let tmp_original = std::env::temp_dir().join("zvcr_encode_original.bak");
@@ -177,13 +140,7 @@ mod tests {
 
     #[test]
     fn encode_is_exact_inverse_of_reconstruct() {
-        let dir = std::path::Path::new("test_files");
-        let location = RegionLocation {
-            rx: -1,
-            rz: -1,
-            dimension_type: DimensionType::Overworld,
-        };
-        let file = read_file_at(dir, &location, 0).unwrap();
+        let file = read_experimental_file();
         let encoded = encode_region(&reconstruct_region(&file));
 
         assert_eq!(encoded.version, file.version);
