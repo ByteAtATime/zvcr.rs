@@ -6,7 +6,11 @@ pub const MAX_INDIRECT_PALETTE_SIZE: usize = u8::MAX as usize + 1;
 pub const ATOM_COUNT: usize = u16::MAX as usize + 1;
 
 pub fn bits_per_entry(palette_length: usize) -> usize {
-    if palette_length <= 16 {
+    if palette_length <= 2 {
+        1
+    } else if palette_length <= 4 {
+        2
+    } else if palette_length <= 16 {
         4
     } else if palette_length <= MAX_INDIRECT_PALETTE_SIZE {
         8
