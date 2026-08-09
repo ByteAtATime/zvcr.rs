@@ -219,14 +219,24 @@ impl WriteHandle {
 
         for column in &block_columns {
             for section in column {
-                for snapshot in &section.reverse_deltas {
+                if let Some(snapshot) = section.reverse_deltas.first() {
+                    inner_handle.serialize_snapshot_body(snapshot);
+                }
+            }
+            for section in column {
+                for snapshot in section.reverse_deltas.iter().skip(1) {
                     inner_handle.serialize_snapshot_body(snapshot);
                 }
             }
         }
         for column in &biome_columns {
             for section in column {
-                for snapshot in &section.reverse_deltas {
+                if let Some(snapshot) = section.reverse_deltas.first() {
+                    inner_handle.serialize_snapshot_body(snapshot);
+                }
+            }
+            for section in column {
+                for snapshot in section.reverse_deltas.iter().skip(1) {
                     inner_handle.serialize_snapshot_body(snapshot);
                 }
             }

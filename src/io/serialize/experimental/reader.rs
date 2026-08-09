@@ -412,7 +412,14 @@ impl ReadHandle {
         }
 
         for y in 0..section_count {
-            for &(k, j, byte_len, mask, active) in &block_body_plans[y] {
+            let plan = &block_body_plans[y];
+            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 == 0) {
+                let i = present_indices[k];
+                let seg = segments[i].as_mut().unwrap();
+                let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
+                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
+            }
+            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 != 0) {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
@@ -420,7 +427,14 @@ impl ReadHandle {
             }
         }
         for y in 0..section_count {
-            for &(k, j, byte_len, mask, active) in &biome_body_plans[y] {
+            let plan = &biome_body_plans[y];
+            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 == 0) {
+                let i = present_indices[k];
+                let seg = segments[i].as_mut().unwrap();
+                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
+                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
+            }
+            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 != 0) {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
