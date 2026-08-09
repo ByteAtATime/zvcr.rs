@@ -262,6 +262,7 @@ impl ReadHandle {
             mask,
             &mut packed_longs,
         );
+        super::bitplane::remap_from_popcount(&mut packed_longs, bits as u8);
         paletted.packed_long_array = packed_longs;
         Ok(())
     }

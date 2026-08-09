@@ -127,3 +127,75 @@ pub(crate) fn unpack_bitplanes_into<const UNPACKED_SIZE: usize>(
         ),
     }
 }
+
+fn popcount_order(bits: u8) -> Vec<u8> {
+    let max = 1usize << bits;
+    let mut indices: Vec<usize> = (0..max).collect();
+    indices.sort_unstable_by_key(|&i| (i.count_ones(), i));
+    indices.into_iter().map(|i| i as u8).collect()
+}
+
+fn popcount_rank(bits: u8) -> Vec<u8> {
+    let order = popcount_order(bits);
+    let mut rank = vec![0u8; order.len()];
+    for (i, &v) in order.iter().enumerate() {
+        rank[v as usize] = i as u8;
+    }
+    rank
+}
+
+static POPCOUNT_ORDER_4: std::sync::LazyLock<Vec<u8>> =
+    std::sync::LazyLock::new(|| popcount_order(4));
+static POPCOUNT_ORDER_8: std::sync::LazyLock<Vec<u8>> =
+    std::sync::LazyLock::new(|| popcount_order(8));
+static POPCOUNT_RANK_4: std::sync::LazyLock<Vec<u8>> =
+    std::sync::LazyLock::new(|| popcount_rank(4));
+static POPCOUNT_RANK_8: std::sync::LazyLock<Vec<u8>> =
+    std::sync::LazyLock::new(|| popcount_rank(8));
+
+fn remap_packed_impl<const BITS: u8>(packed: &[u64], table: &[u8]) -> Vec<u64> {
+    let bits = BITS as usize;
+    let mask = (1u64 << BITS) - 1;
+    let vpl = 64 / bits;
+    packed
+        .iter()
+        .map(|&cell| {
+            let mut new_cell = 0u64;
+            for i in 0..vpl {
+                let idx = ((cell >> (i * bits)) & mask) as usize;
+                new_cell |= (table[idx] as u64) << (i * bits);
+            }
+            new_cell
+        })
+        .collect()
+}
+
+fn remap_packed_in_place_impl<const BITS: u8>(packed: &mut [u64], table: &[u8]) {
+    let bits = BITS as usize;
+    let mask = (1u64 << BITS) - 1;
+    let vpl = 64 / bits;
+    for cell in packed.iter_mut() {
+        let mut new_cell = 0u64;
+        for i in 0..vpl {
+            let idx = ((*cell >> (i * bits)) & mask) as usize;
+            new_cell |= (table[idx] as u64) << (i * bits);
+        }
+        *cell = new_cell;
+    }
+}
+
+pub(crate) fn remap_to_popcount(packed: &[u64], bits: u8) -> Vec<u64> {
+    match bits {
+        4 => remap_packed_impl::<4>(packed, &POPCOUNT_ORDER_4),
+        8 => remap_packed_impl::<8>(packed, &POPCOUNT_ORDER_8),
+        _ => packed.to_vec(),
+    }
+}
+
+pub(crate) fn remap_from_popcount(packed: &mut [u64], bits: u8) {
+    match bits {
+        4 => remap_packed_in_place_impl::<4>(packed, &POPCOUNT_RANK_4),
+        8 => remap_packed_in_place_impl::<8>(packed, &POPCOUNT_RANK_8),
+        _ => {}
+    }
+}

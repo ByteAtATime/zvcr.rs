@@ -93,12 +93,11 @@ impl WriteHandle {
                 put_u8(&mut self.data, 1);
                 self.record_palette_index(&paletted.palette, is_block);
                 if !paletted.palette.direct() {
+                    let bits = paletted.palette.bits_per_entry as u8;
+                    let remapped = super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
                     put_u8(
                         &mut self.data,
-                        super::bitplane::compute_plane_mask(
-                            &paletted.packed_long_array,
-                            paletted.palette.bits_per_entry as u8,
-                        ),
+                        super::bitplane::compute_plane_mask(&remapped, bits),
                     );
                 }
             }
@@ -117,14 +116,14 @@ impl WriteHandle {
             return;
         }
         let bits = paletted.palette.bits_per_entry as u8;
-        let mask =
-            super::bitplane::compute_plane_mask(&paletted.packed_long_array, bits);
+        let remapped = super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
+        let mask = super::bitplane::compute_plane_mask(&remapped, bits);
         let plane_bytes = UNPACKED_SIZE / 8;
         let byte_len = mask.count_ones() as usize * plane_bytes;
         let start = self.data.len();
         self.data.resize(start + byte_len, 0);
         super::bitplane::pack_bitplanes_into::<UNPACKED_SIZE>(
-            &paletted.packed_long_array,
+            &remapped,
             bits,
             mask,
             &mut self.data[start..start + byte_len],
