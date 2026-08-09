@@ -1,10 +1,50 @@
 use super::{FileResult, Progress};
 use crate::io::file_location::EXTENSION;
+use crate::raw::RegionData;
+use crate::region::delta::PackedDeltaData;
 use crate::{
     ExperimentalReader, ExperimentalWriter, Reader, ReferenceReader, Writer,
 };
 use std::path::Path;
 use std::time::Instant;
+
+fn snapshots_equal<const N: usize>(a: &PackedDeltaData<N>, b: &PackedDeltaData<N>) -> bool {
+    if a.reverse_deltas.len() != b.reverse_deltas.len() {
+        return false;
+    }
+    a.reverse_deltas
+        .iter()
+        .zip(b.reverse_deltas.iter())
+        .all(|(sa, sb)| {
+            sa.timestamp == sb.timestamp && sa.data.unpack() == sb.data.unpack()
+        })
+}
+
+fn semantically_equal(a: &RegionData, b: &RegionData) -> bool {
+    if a.segments.len() != b.segments.len() {
+        return false;
+    }
+    a.segments.iter().zip(b.segments.iter()).all(|(sa, sb)| {
+        match (sa, sb) {
+            (None, None) => true,
+            (Some(x), Some(y)) => {
+                x.block_sections.len() == y.block_sections.len()
+                    && x.biome_sections.len() == y.biome_sections.len()
+                    && x.block_sections
+                        .iter()
+                        .zip(y.block_sections.iter())
+                        .all(|(p, q)| snapshots_equal(p, q))
+                    && x.biome_sections
+                        .iter()
+                        .zip(y.biome_sections.iter())
+                        .all(|(p, q)| snapshots_equal(p, q))
+                    && x.states == y.states
+                    && x.tile_entities == y.tile_entities
+            }
+            _ => false,
+        }
+    })
+}
 
 pub(super) fn bench_one(
     path: &Path,
@@ -143,7 +183,7 @@ pub(super) fn bench_one(
         );
     }
 
-    let integrity_ok = Some(ref_data == exp_data);
+    let integrity_ok = Some(semantically_equal(&ref_data, &exp_data));
     let error = if integrity_ok == Some(true) {
         None
     } else {
