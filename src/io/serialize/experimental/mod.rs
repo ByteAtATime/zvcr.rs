@@ -6,12 +6,30 @@ pub(crate) use file::File;
 
 use crate::io::serialize::types::{Reader, Writer};
 use crate::raw::RegionData;
+use crate::region::delta::PackedDeltaData;
+use crate::region::packed_data::{PackedData, PackedSnapshot};
+use crate::region::palette::PackScratch;
 use crate::region::segment::Region;
 use std::sync::Arc;
 
 use self::reader::ReadHandle;
 use self::writer::serialize_file_to_vec;
 use super::codec::{encode_segment, reconstruct_segment};
+
+fn re_pack_delta<const N: usize>(data: &PackedDeltaData<N>) -> PackedDeltaData<N> {
+    let mut scratch = PackScratch::new();
+    let mut out = PackedDeltaData {
+        reverse_deltas: Vec::with_capacity(data.reverse_deltas.len()),
+    };
+    for snap in &data.reverse_deltas {
+        let unpacked = snap.data.unpack();
+        out.reverse_deltas.push(PackedSnapshot {
+            data: PackedData::pack_with(&unpacked, &mut scratch),
+            timestamp: snap.timestamp,
+        });
+    }
+    out
+}
 
 pub(crate) fn reconstruct_region(file: &File) -> RegionData {
     RegionData {
@@ -29,7 +47,16 @@ pub(crate) fn reconstruct_region(file: &File) -> RegionData {
 pub(crate) fn encode_region(rd: &RegionData) -> File {
     let mut region = Region::new(rd.protocol_version);
     for (i, slot) in rd.segments.iter().enumerate() {
-        region.segments[i] = slot.as_ref().map(|sd| Arc::new(encode_segment(sd)));
+        region.segments[i] = slot.as_ref().map(|sd| {
+            let mut segment = encode_segment(sd);
+            for section in segment.block_sections.active_mut() {
+                *section = re_pack_delta(section);
+            }
+            for section in segment.biome_sections.active_mut() {
+                *section = re_pack_delta(section);
+            }
+            Arc::new(segment)
+        });
     }
     File {
         version: rd.version,

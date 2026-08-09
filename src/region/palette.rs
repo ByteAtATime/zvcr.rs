@@ -77,9 +77,26 @@ pub fn build_palette_with<const UNPACKED_SIZE: usize>(
         scratch.indices[atom as usize] = palette.len() as u8;
         palette.push(atom);
     }
-    let bpe = bits_per_entry(palette.len());
+
+    let mut counts = vec![0u32; palette.len()];
+    for &atom in data {
+        counts[scratch.indices[atom as usize] as usize] += 1;
+    }
+
+    let mut order: Vec<usize> = (0..palette.len()).collect();
+    order.sort_unstable_by_key(|&i| std::cmp::Reverse(counts[i]));
+
+    let mut sorted = Vec::with_capacity(palette.len());
+    for &i in &order {
+        sorted.push(palette[i]);
+    }
+    for (new_idx, &i) in order.iter().enumerate() {
+        scratch.indices[palette[i] as usize] = new_idx as u8;
+    }
+
+    let bpe = bits_per_entry(sorted.len());
     Palette {
-        palette: palette.into(),
+        palette: sorted.into(),
         bits_per_entry: bpe,
     }
 }
