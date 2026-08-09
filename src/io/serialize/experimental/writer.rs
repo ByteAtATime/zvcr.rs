@@ -100,9 +100,22 @@ impl WriteHandle {
         &mut self,
         snapshot: &PackedSnapshot<UNPACKED_SIZE>,
     ) {
-        if let Data::Paletted(paletted) = &snapshot.data.data {
+        let Data::Paletted(paletted) = &snapshot.data.data else {
+            return;
+        };
+        if paletted.palette.direct() {
             put_u64_le_slice(&mut self.data, &paletted.packed_long_array);
+            return;
         }
+        let packed_len = paletted.packed_long_array.len();
+        let byte_len = packed_len * std::mem::size_of::<u64>();
+        let start = self.data.len();
+        self.data.resize(start + byte_len, 0);
+        super::bitplane::pack_bitplanes_into::<UNPACKED_SIZE>(
+            &paletted.packed_long_array,
+            paletted.palette.bits_per_entry as u8,
+            &mut self.data[start..start + byte_len],
+        );
     }
 
     pub(crate) fn serialize_column_headers<const UNPACKED_SIZE: usize>(

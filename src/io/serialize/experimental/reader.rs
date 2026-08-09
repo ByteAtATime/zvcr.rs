@@ -22,6 +22,7 @@ pub(crate) struct ReadHandle {
     pub(crate) ctx: Context,
     cursor: ByteCursor,
     max_deltas: usize,
+    plane_scratch: Vec<u8>,
 }
 
 impl Deref for ReadHandle {
@@ -43,6 +44,7 @@ impl ReadHandle {
             ctx: Context::default(),
             cursor: ByteCursor::new(data),
             max_deltas,
+            plane_scratch: Vec::new(),
         }
     }
 
@@ -206,31 +208,49 @@ impl ReadHandle {
         active: bool,
         snapshot: &mut PackedSnapshot<UNPACKED_SIZE>,
     ) -> Result<(), ReadError> {
+        let byte_len = packed_len * std::mem::size_of::<u64>();
         if !active {
-            self.pos += packed_len * std::mem::size_of::<u64>();
+            self.pos += byte_len;
             return Ok(());
         }
 
-        let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
-        {
-            let byte_slice = unsafe {
-                std::slice::from_raw_parts_mut(
-                    packed_longs.as_mut_ptr() as *mut u8,
-                    packed_len * std::mem::size_of::<u64>(),
-                )
-            };
-            self.read_exact(byte_slice)?;
-        }
-        #[cfg(not(target_endian = "little"))]
-        {
-            for v in packed_longs.iter_mut() {
-                *v = v.to_le();
+        let Data::Paletted(paletted) = &mut snapshot.data.data else {
+            return Ok(());
+        };
+
+        if paletted.palette.direct() {
+            let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
+            {
+                let byte_slice = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        packed_longs.as_mut_ptr() as *mut u8,
+                        byte_len,
+                    )
+                };
+                self.read_exact(byte_slice)?;
             }
+            #[cfg(not(target_endian = "little"))]
+            {
+                for v in packed_longs.iter_mut() {
+                    *v = v.to_le();
+                }
+            }
+            paletted.packed_long_array = packed_longs;
+            return Ok(());
         }
 
-        if let Data::Paletted(paletted) = &mut snapshot.data.data {
-            paletted.packed_long_array = packed_longs;
+        if self.plane_scratch.len() < byte_len {
+            self.plane_scratch.resize(byte_len, 0);
         }
+        let scratch = &mut self.plane_scratch[..byte_len];
+        self.cursor.read_exact(scratch)?;
+        let mut packed_longs = vec![0u64; packed_len];
+        super::bitplane::unpack_bitplanes_into::<UNPACKED_SIZE>(
+            scratch,
+            paletted.palette.bits_per_entry as u8,
+            &mut packed_longs,
+        );
+        paletted.packed_long_array = packed_longs;
         Ok(())
     }
 
