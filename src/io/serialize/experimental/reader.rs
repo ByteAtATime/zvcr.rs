@@ -115,7 +115,7 @@ impl ReadHandle {
         palette_table: &[Palette],
     ) -> Result<(
         Vec<PackedDeltaData<UNPACKED_SIZE>>,
-        Vec<(usize, usize, usize, bool)>,
+        Vec<(usize, usize, usize, u8, bool)>,
     ), ReadError> {
         let mut counts = Vec::with_capacity(column_length);
         for _ in 0..column_length {
@@ -142,7 +142,7 @@ impl ReadHandle {
             })
             .collect();
 
-        let mut body_plan: Vec<(usize, usize, usize, bool)> = Vec::new();
+        let mut body_plan: Vec<(usize, usize, usize, u8, bool)> = Vec::new();
 
         for (section_index, &count) in counts.iter().enumerate() {
             for delta_index in 0..count {
@@ -176,6 +176,14 @@ impl ReadHandle {
                     palette_table[palette_index as usize].bits_per_entry
                 };
                 let packed_len = UNPACKED_SIZE.div_ceil(64 / bits_per_entry);
+                let direct = palette_index == u32::MAX;
+                let plane_bytes = UNPACKED_SIZE / 8;
+                let (byte_len, mask) = if direct {
+                    (packed_len * std::mem::size_of::<u64>(), 0u8)
+                } else {
+                    let mask = self.read_u8()?;
+                    (mask.count_ones() as usize * plane_bytes, mask)
+                };
 
                 if active {
                     let palette = if palette_index == u32::MAX {
@@ -192,9 +200,9 @@ impl ReadHandle {
                         },
                         timestamp,
                     };
-                    body_plan.push((section_index, delta_index, packed_len, true));
+                    body_plan.push((section_index, delta_index, byte_len, mask, true));
                 } else {
-                    body_plan.push((section_index, delta_index, packed_len, false));
+                    body_plan.push((section_index, delta_index, byte_len, mask, false));
                 }
             }
         }
@@ -204,11 +212,11 @@ impl ReadHandle {
 
     pub(crate) fn read_snapshot_body_into<const UNPACKED_SIZE: usize>(
         &mut self,
-        packed_len: usize,
+        byte_len: usize,
+        mask: u8,
         active: bool,
         snapshot: &mut PackedSnapshot<UNPACKED_SIZE>,
     ) -> Result<(), ReadError> {
-        let byte_len = packed_len * std::mem::size_of::<u64>();
         if !active {
             self.pos += byte_len;
             return Ok(());
@@ -217,6 +225,9 @@ impl ReadHandle {
         let Data::Paletted(paletted) = &mut snapshot.data.data else {
             return Ok(());
         };
+
+        let bits = paletted.palette.bits_per_entry;
+        let packed_len = UNPACKED_SIZE.div_ceil(64 / bits);
 
         if paletted.palette.direct() {
             let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
@@ -247,7 +258,8 @@ impl ReadHandle {
         let mut packed_longs = vec![0u64; packed_len];
         super::bitplane::unpack_bitplanes_into::<UNPACKED_SIZE>(
             scratch,
-            paletted.palette.bits_per_entry as u8,
+            bits as u8,
+            mask,
             &mut packed_longs,
         );
         paletted.packed_long_array = packed_longs;
@@ -363,7 +375,7 @@ impl ReadHandle {
 
         let mut block_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>>> =
             Vec::with_capacity(section_count);
-        let mut block_body_plans: Vec<Vec<(usize, usize, usize, bool)>> =
+        let mut block_body_plans: Vec<Vec<(usize, usize, usize, u8, bool)>> =
             Vec::with_capacity(section_count);
         for _ in 0..section_count {
             let (column, plan) =
@@ -374,7 +386,7 @@ impl ReadHandle {
 
         let mut biome_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BIOMES>>> =
             Vec::with_capacity(section_count);
-        let mut biome_body_plans: Vec<Vec<(usize, usize, usize, bool)>> =
+        let mut biome_body_plans: Vec<Vec<(usize, usize, usize, u8, bool)>> =
             Vec::with_capacity(section_count);
         for _ in 0..section_count {
             let (column, plan) =
@@ -399,19 +411,19 @@ impl ReadHandle {
         }
 
         for y in 0..section_count {
-            for &(k, j, packed_len, active) in &block_body_plans[y] {
+            for &(k, j, byte_len, mask, active) in &block_body_plans[y] {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(packed_len, active, snapshot)?;
+                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
             }
         }
         for y in 0..section_count {
-            for &(k, j, packed_len, active) in &biome_body_plans[y] {
+            for &(k, j, byte_len, mask, active) in &biome_body_plans[y] {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(packed_len, active, snapshot)?;
+                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
             }
         }
 

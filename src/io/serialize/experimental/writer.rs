@@ -92,6 +92,15 @@ impl WriteHandle {
             Data::Paletted(paletted) => {
                 put_u8(&mut self.data, 1);
                 self.record_palette_index(&paletted.palette, is_block);
+                if !paletted.palette.direct() {
+                    put_u8(
+                        &mut self.data,
+                        super::bitplane::compute_plane_mask(
+                            &paletted.packed_long_array,
+                            paletted.palette.bits_per_entry as u8,
+                        ),
+                    );
+                }
             }
         }
     }
@@ -107,13 +116,17 @@ impl WriteHandle {
             put_u64_le_slice(&mut self.data, &paletted.packed_long_array);
             return;
         }
-        let packed_len = paletted.packed_long_array.len();
-        let byte_len = packed_len * std::mem::size_of::<u64>();
+        let bits = paletted.palette.bits_per_entry as u8;
+        let mask =
+            super::bitplane::compute_plane_mask(&paletted.packed_long_array, bits);
+        let plane_bytes = UNPACKED_SIZE / 8;
+        let byte_len = mask.count_ones() as usize * plane_bytes;
         let start = self.data.len();
         self.data.resize(start + byte_len, 0);
         super::bitplane::pack_bitplanes_into::<UNPACKED_SIZE>(
             &paletted.packed_long_array,
-            paletted.palette.bits_per_entry as u8,
+            bits,
+            mask,
             &mut self.data[start..start + byte_len],
         );
     }
