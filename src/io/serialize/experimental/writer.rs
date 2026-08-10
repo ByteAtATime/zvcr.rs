@@ -23,6 +23,8 @@ pub(crate) struct WriteHandle {
     pub(crate) data: Vec<u8>,
     block_palette_table: PaletteTable,
     biome_palette_table: PaletteTable,
+    plane_scratch: Vec<u8>,
+    encode_scratch: Vec<u8>,
 }
 
 impl WriteHandle {
@@ -36,6 +38,8 @@ impl WriteHandle {
             data: Vec::with_capacity(32 * 1024 * 1024),
             block_palette_table: AHashMap::new(),
             biome_palette_table: AHashMap::new(),
+            plane_scratch: Vec::new(),
+            encode_scratch: Vec::new(),
         }
     }
 
@@ -120,14 +124,20 @@ impl WriteHandle {
         let mask = super::bitplane::compute_plane_mask(&remapped, bits);
         let plane_bytes = UNPACKED_SIZE / 8;
         let byte_len = mask.count_ones() as usize * plane_bytes;
-        let start = self.data.len();
-        self.data.resize(start + byte_len, 0);
+
+        self.plane_scratch.clear();
+        self.plane_scratch.resize(byte_len, 0);
         super::bitplane::pack_bitplanes_into::<UNPACKED_SIZE>(
             &remapped,
             bits,
             mask,
-            &mut self.data[start..start + byte_len],
+            &mut self.plane_scratch[..byte_len],
         );
+
+        self.encode_scratch.clear();
+        super::rle::encode(&self.plane_scratch[..byte_len], &mut self.encode_scratch);
+        put_u16_le(&mut self.data, self.encode_scratch.len() as u16);
+        put_bytes(&mut self.data, &self.encode_scratch);
     }
 
     pub(crate) fn serialize_column_headers<const UNPACKED_SIZE: usize>(

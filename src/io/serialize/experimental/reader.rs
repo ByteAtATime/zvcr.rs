@@ -22,7 +22,9 @@ pub(crate) struct ReadHandle {
     pub(crate) ctx: Context,
     cursor: ByteCursor,
     max_deltas: usize,
+    version: Version,
     plane_scratch: Vec<u8>,
+    encoded_scratch: Vec<u8>,
 }
 
 impl Deref for ReadHandle {
@@ -44,7 +46,9 @@ impl ReadHandle {
             ctx: Context::default(),
             cursor: ByteCursor::new(data),
             max_deltas,
+            version: ZVCR3D_LATEST_VERSION,
             plane_scratch: Vec::new(),
+            encoded_scratch: Vec::new(),
         }
     }
 
@@ -115,7 +119,7 @@ impl ReadHandle {
         palette_table: &[Palette],
     ) -> Result<(
         Vec<PackedDeltaData<UNPACKED_SIZE>>,
-        Vec<(usize, usize, usize, u8, bool)>,
+        Vec<(usize, usize, usize, u8, bool, bool)>,
     ), ReadError> {
         let mut counts = Vec::with_capacity(column_length);
         for _ in 0..column_length {
@@ -142,7 +146,7 @@ impl ReadHandle {
             })
             .collect();
 
-        let mut body_plan: Vec<(usize, usize, usize, u8, bool)> = Vec::new();
+        let mut body_plan: Vec<(usize, usize, usize, u8, bool, bool)> = Vec::new();
 
         for (section_index, &count) in counts.iter().enumerate() {
             for delta_index in 0..count {
@@ -200,9 +204,9 @@ impl ReadHandle {
                         },
                         timestamp,
                     };
-                    body_plan.push((section_index, delta_index, byte_len, mask, true));
+                    body_plan.push((section_index, delta_index, byte_len, mask, direct, true));
                 } else {
-                    body_plan.push((section_index, delta_index, byte_len, mask, false));
+                    body_plan.push((section_index, delta_index, byte_len, mask, direct, false));
                 }
             }
         }
@@ -214,11 +218,19 @@ impl ReadHandle {
         &mut self,
         byte_len: usize,
         mask: u8,
+        direct: bool,
         active: bool,
         snapshot: &mut PackedSnapshot<UNPACKED_SIZE>,
     ) -> Result<(), ReadError> {
+        let rle = self.version >= Version::Zvcr3d1001;
+
         if !active {
-            self.pos += byte_len;
+            if rle && !direct {
+                let encoded_len = self.cursor.read_u16()? as usize;
+                self.pos += encoded_len;
+            } else {
+                self.pos += byte_len;
+            }
             return Ok(());
         }
 
@@ -254,7 +266,18 @@ impl ReadHandle {
             self.plane_scratch.resize(byte_len, 0);
         }
         let scratch = &mut self.plane_scratch[..byte_len];
-        self.cursor.read_exact(scratch)?;
+
+        if rle {
+            let encoded_len = self.cursor.read_u16()? as usize;
+            if self.encoded_scratch.len() < encoded_len {
+                self.encoded_scratch.resize(encoded_len, 0);
+            }
+            self.cursor.read_exact(&mut self.encoded_scratch[..encoded_len])?;
+            super::rle::decode(&self.encoded_scratch[..encoded_len], scratch)?;
+        } else {
+            self.cursor.read_exact(scratch)?;
+        }
+
         let mut packed_longs = vec![0u64; packed_len];
         super::bitplane::unpack_bitplanes_into::<UNPACKED_SIZE>(
             scratch,
@@ -376,7 +399,7 @@ impl ReadHandle {
 
         let mut block_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>>> =
             Vec::with_capacity(section_count);
-        let mut block_body_plans: Vec<Vec<(usize, usize, usize, u8, bool)>> =
+        let mut block_body_plans: Vec<Vec<(usize, usize, usize, u8, bool, bool)>> =
             Vec::with_capacity(section_count);
         for _ in 0..section_count {
             let (column, plan) =
@@ -387,7 +410,7 @@ impl ReadHandle {
 
         let mut biome_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BIOMES>>> =
             Vec::with_capacity(section_count);
-        let mut biome_body_plans: Vec<Vec<(usize, usize, usize, u8, bool)>> =
+        let mut biome_body_plans: Vec<Vec<(usize, usize, usize, u8, bool, bool)>> =
             Vec::with_capacity(section_count);
         for _ in 0..section_count {
             let (column, plan) =
@@ -413,32 +436,32 @@ impl ReadHandle {
 
         for y in 0..section_count {
             let plan = &block_body_plans[y];
-            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 == 0) {
+            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 == 0) {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
+                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
             }
-            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 != 0) {
+            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 != 0) {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
+                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
             }
         }
         for y in 0..section_count {
             let plan = &biome_body_plans[y];
-            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 == 0) {
+            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 == 0) {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
+                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
             }
-            for &(k, j, byte_len, mask, active) in plan.iter().filter(|p| p.1 != 0) {
+            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 != 0) {
                 let i = present_indices[k];
                 let seg = segments[i].as_mut().unwrap();
                 let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, active, snapshot)?;
+                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
             }
         }
 
@@ -470,6 +493,7 @@ impl ReadHandle {
 
         let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
         region_handle.ctx = self.ctx.clone();
+        region_handle.version = version;
 
         let mut file = File {
             version,

@@ -7,11 +7,12 @@ pub enum Version {
     Zvcr3d0120 = 4,
     Zvcr3d0130 = 5,
     Zvcr3d0140 = 6,
-    #[default]
     Zvcr3d1000 = 7,
+    #[default]
+    Zvcr3d1001 = 8,
 }
 
-pub const ZVCR3D_LATEST_VERSION: Version = Version::Zvcr3d1000;
+pub const ZVCR3D_LATEST_VERSION: Version = Version::Zvcr3d1001;
 
 impl Version {
     pub fn from_u8(value: u8) -> Option<Self> {
@@ -23,6 +24,7 @@ impl Version {
             5 => Some(Self::Zvcr3d0130),
             6 => Some(Self::Zvcr3d0140),
             7 => Some(Self::Zvcr3d1000),
+            8 => Some(Self::Zvcr3d1001),
             _ => None,
         }
     }
@@ -36,6 +38,7 @@ impl Version {
             Self::Zvcr3d0130 => "0.1.3.0",
             Self::Zvcr3d0140 => "0.1.4.0",
             Self::Zvcr3d1000 => "1.0.0.0",
+            Self::Zvcr3d1001 => "1.0.0.1",
         }
     }
 }
