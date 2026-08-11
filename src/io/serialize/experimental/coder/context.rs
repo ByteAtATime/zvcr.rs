@@ -1,4 +1,5 @@
 use super::super::rans::*;
+use crate::definitions::{REGION_SIDELENGTH_SEGMENTS, SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
 
 const CTX_BITS: u32 = 22;
 const CTX_COUNT: usize = 1 << CTX_BITS;
@@ -488,9 +489,64 @@ fn read_neighbors_safe(
     }
 }
 
+pub(crate) struct NeighborSource<'a> {
+    cache: &'a [([u16; SECTION_SIZE_BLOCKS], Vec<u16>)],
+    pos: &'a [i32],
+    section_count: usize,
+    cx: usize,
+    cz: usize,
+    sec_idx: usize,
+}
+
+impl<'a> NeighborSource<'a> {
+    pub(crate) fn new(
+        cache: &'a [([u16; SECTION_SIZE_BLOCKS], Vec<u16>)],
+        pos: &'a [i32],
+        section_count: usize,
+        cx: usize,
+        cz: usize,
+        sec_idx: usize,
+    ) -> Self {
+        Self {
+            cache,
+            pos,
+            section_count,
+            cx,
+            cz,
+            sec_idx,
+        }
+    }
+
+    fn neighbor_blocks(
+        &self,
+        dcx: i32,
+        dcz: i32,
+        dsec: i32,
+    ) -> Option<&'a [u16; SECTION_SIZE_BLOCKS]> {
+        let ncx = self.cx as i32 + dcx;
+        let ncz = self.cz as i32 + dcz;
+        let nsec = self.sec_idx as i32 + dsec;
+        if ncx < 0
+            || ncx >= REGION_SIDELENGTH_SEGMENTS as i32
+            || ncz < 0
+            || ncz >= REGION_SIDELENGTH_SEGMENTS as i32
+            || nsec < 0
+            || nsec >= self.section_count as i32
+        {
+            return None;
+        }
+        let nseg = ncx as usize * REGION_SIDELENGTH_SEGMENTS + ncz as usize;
+        let idx = self.pos[nsec as usize * SEGMENTS_PER_REGION + nseg];
+        if idx < 0 {
+            return None;
+        }
+        Some(&self.cache[idx as usize].0)
+    }
+}
+
 pub(crate) struct ContextCodec {
     model: ContextModel,
-    recon: Vec<u16>,
+    recon: Option<Vec<u16>>,
     recs: Vec<BitRec>,
 }
 
@@ -498,21 +554,32 @@ impl ContextCodec {
     pub(crate) fn new(section_count: usize) -> Self {
         Self {
             model: ContextModel::new(),
-            recon: vec![0u16; section_count * 16 * ROW_STRIDE],
-            recs: Vec::with_capacity(8192),
+            recon: Some(vec![0u16; section_count * 16 * ROW_STRIDE]),
+            recs: Vec::with_capacity(32768),
+        }
+    }
+
+    pub(crate) fn new_encoder(_section_count: usize) -> Self {
+        Self {
+            model: ContextModel::new(),
+            recon: None,
+            recs: Vec::with_capacity(32768),
         }
     }
 
     pub(crate) fn reset(&mut self, section_count: usize) {
         self.model.reset();
-        let needed = section_count * 16 * ROW_STRIDE;
-        if self.recon.len() < needed {
-            self.recon.resize(needed, 0);
+        if let Some(recon) = self.recon.as_mut() {
+            let needed = section_count * 16 * ROW_STRIDE;
+            if recon.len() < needed {
+                recon.resize(needed, 0);
+            }
+            recon[..needed].fill(0);
         }
-        self.recon[..needed].fill(0);
     }
 
     pub(crate) fn write_recon(&mut self, blocks: &[u16], cx: usize, cz: usize, sec_idx: usize) {
+        let recon = self.recon.as_mut().unwrap();
         let base_x = cx * 16;
         let base_y = sec_idx * 16;
         let base_z = cz * 16;
@@ -522,7 +589,7 @@ impl ContextCodec {
                 let rz = base_z + z;
                 let recon_base = ry * ROW_STRIDE + rz * COL_STRIDE + base_x;
                 let block_base = y * 256 + z * 16;
-                self.recon[recon_base..recon_base + 16]
+                recon[recon_base..recon_base + 16]
                     .copy_from_slice(&blocks[block_base..block_base + 16]);
             }
         }
@@ -532,54 +599,52 @@ impl ContextCodec {
         &mut self,
         blocks: &[u16],
         val_to_local: &[u16],
-        cx: usize,
-        cz: usize,
-        sec_idx: usize,
+        src: &NeighborSource,
     ) -> Vec<u8> {
-        let base_x = cx * 16;
-        let base_y = sec_idx * 16;
-        let base_z = cz * 16;
-
-        self.write_recon(blocks, cx, cz, sec_idx);
         self.recs.clear();
 
         for y in 0..16usize {
-            let ry = base_y + y;
             for z in 0..16usize {
-                let rz = base_z + z;
-                let row_base = ry * ROW_STRIDE + rz * COL_STRIDE + base_x;
                 let block_base = y * 256 + z * 16;
-
-                if base_x > 0 && ry > 1 && rz > 0 {
-                    for x in 0..16usize {
-                        let idx = row_base + x;
-                        let nb = read_neighbors_fast(&self.recon, idx);
-                        let sym = blocks[block_base + x];
-                        self.model.encode_voxel(
-                            &mut self.recs,
-                            nb.west,
-                            nb.down,
-                            nb.north,
-                            nb.down2,
-                            sym,
-                            val_to_local[sym as usize],
-                        );
-                    }
-                } else {
-                    for x in 0..16usize {
-                        let idx = row_base + x;
-                        let nb = read_neighbors_safe(&self.recon, idx, x, ry, rz, base_x);
-                        let sym = blocks[block_base + x];
-                        self.model.encode_voxel(
-                            &mut self.recs,
-                            nb.west,
-                            nb.down,
-                            nb.north,
-                            nb.down2,
-                            sym,
-                            val_to_local[sym as usize],
-                        );
-                    }
+                for x in 0..16usize {
+                    let idx = block_base + x;
+                    let west = if x > 0 {
+                        blocks[idx - 1]
+                    } else {
+                        src.neighbor_blocks(-1, 0, 0)
+                            .map_or(0, |b| b[y * 256 + z * 16 + 15])
+                    };
+                    let north = if z > 0 {
+                        blocks[idx - 16]
+                    } else {
+                        src.neighbor_blocks(0, -1, 0)
+                            .map_or(0, |b| b[y * 256 + 15 * 16 + x])
+                    };
+                    let down = if y > 0 {
+                        blocks[idx - 256]
+                    } else {
+                        src.neighbor_blocks(0, 0, -1)
+                            .map_or(0, |b| b[15 * 256 + z * 16 + x])
+                    };
+                    let down2 = if y > 1 {
+                        blocks[idx - 512]
+                    } else if y == 1 {
+                        src.neighbor_blocks(0, 0, -1)
+                            .map_or(0, |b| b[15 * 256 + z * 16 + x])
+                    } else {
+                        src.neighbor_blocks(0, 0, -1)
+                            .map_or(0, |b| b[14 * 256 + z * 16 + x])
+                    };
+                    let sym = blocks[idx];
+                    self.model.encode_voxel(
+                        &mut self.recs,
+                        west,
+                        down,
+                        north,
+                        down2,
+                        sym,
+                        val_to_local[sym as usize],
+                    );
                 }
             }
         }
@@ -598,6 +663,7 @@ impl ContextCodec {
         let mut dec =
             RansDecoder::new(ans_bytes).map_err(|e| format!("rANS decode error: {e}"))?;
 
+        let recon = self.recon.as_mut().unwrap();
         let mut result = [0u16; 4096];
         let base_x = cx * 16;
         let base_y = sec_idx * 16;
@@ -613,7 +679,7 @@ impl ContextCodec {
                 if base_x > 0 && ry > 1 && rz > 0 {
                     for x in 0..16usize {
                         let idx = row_base + x;
-                        let nb = read_neighbors_fast(&self.recon, idx);
+                        let nb = read_neighbors_fast(recon, idx);
                         let sym = self.model.decode_voxel(
                             &mut dec,
                             nb.west,
@@ -623,12 +689,12 @@ impl ContextCodec {
                             palette,
                         )?;
                         result[block_base + x] = sym;
-                        self.recon[idx] = sym;
+                        recon[idx] = sym;
                     }
                 } else {
                     for x in 0..16usize {
                         let idx = row_base + x;
-                        let nb = read_neighbors_safe(&self.recon, idx, x, ry, rz, base_x);
+                        let nb = read_neighbors_safe(recon, idx, x, ry, rz, base_x);
                         let sym = self.model.decode_voxel(
                             &mut dec,
                             nb.west,
@@ -638,7 +704,7 @@ impl ContextCodec {
                             palette,
                         )?;
                         result[block_base + x] = sym;
-                        self.recon[idx] = sym;
+                        recon[idx] = sym;
                     }
                 }
             }

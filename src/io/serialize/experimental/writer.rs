@@ -1,5 +1,5 @@
 use super::File;
-use super::coder::context::ContextCodec;
+use super::coder::context::{ContextCodec, NeighborSource};
 use crate::definitions::*;
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
@@ -144,21 +144,11 @@ impl WriteHandle {
     pub(crate) fn serialize_block_header_j0(
         &mut self,
         snapshot: &PackedSnapshot<SECTION_SIZE_BLOCKS>,
+        _blocks: &[u16; SECTION_SIZE_BLOCKS],
+        unique: &[u16],
         counts: &mut [u32],
-        unique: &mut Vec<u16>,
     ) {
         put_u64_le(&mut self.data, snapshot.timestamp as u64);
-        let blocks = snapshot.data.unpack();
-
-        unique.clear();
-        for &atom in blocks.iter() {
-            if counts[atom as usize] == 0 {
-                unique.push(atom);
-            }
-            counts[atom as usize] += 1;
-        }
-        unique
-            .sort_unstable_by(|&a, &b| counts[b as usize].cmp(&counts[a as usize]).then(a.cmp(&b)));
 
         if unique.len() <= 1 {
             put_u8(&mut self.data, 0);
@@ -181,7 +171,7 @@ impl WriteHandle {
         } else {
             put_u8(&mut self.data, 11);
             let palette = Palette {
-                palette: unique.clone().into(),
+                palette: unique.into(),
                 bits_per_entry: bits_per_entry(unique.len()),
             };
             self.record_palette_index(&palette, true);
@@ -195,28 +185,13 @@ impl WriteHandle {
     pub(crate) fn serialize_block_body_j0(
         &mut self,
         snapshot: &PackedSnapshot<SECTION_SIZE_BLOCKS>,
+        blocks: &[u16; SECTION_SIZE_BLOCKS],
+        unique: &[u16],
         codec: &mut ContextCodec,
-        cx: usize,
-        cz: usize,
-        sec_idx: usize,
         counts: &mut [u32],
-        unique: &mut Vec<u16>,
         val_to_local: &mut [u16],
+        src: &NeighborSource,
     ) {
-        let blocks = snapshot.data.unpack();
-
-        unique.clear();
-        for &atom in blocks.iter() {
-            if counts[atom as usize] == 0 {
-                unique.push(atom);
-            }
-            counts[atom as usize] += 1;
-        }
-        unique
-            .sort_unstable_by(|&a, &b| counts[b as usize].cmp(&counts[a as usize]).then(a.cmp(&b)));
-
-        codec.write_recon(&blocks, cx, cz, sec_idx);
-
         if unique.len() <= 1 {
             for &atom in unique.iter() {
                 counts[atom as usize] = 0;
@@ -236,7 +211,7 @@ impl WriteHandle {
             val_to_local[atom as usize] = local as u16;
         }
 
-        let encoded = codec.encode_section(&blocks, val_to_local, cx, cz, sec_idx);
+        let encoded = codec.encode_section(blocks, val_to_local, src);
         put_u32_le(&mut self.data, encoded.len() as u32);
         put_bytes(&mut self.data, &encoded);
 
@@ -334,15 +309,42 @@ impl WriteHandle {
 
         let mut counts = vec![0u32; 65536];
         let mut unique = Vec::new();
+        let j0_count = block_columns
+            .iter()
+            .flatten()
+            .filter(|section| !section.reverse_deltas.is_empty())
+            .count();
+        let mut j0_cache: Vec<([u16; SECTION_SIZE_BLOCKS], Vec<u16>)> =
+            Vec::with_capacity(j0_count);
+        let mut j0_pos = vec![-1i32; section_count * SEGMENTS_PER_REGION];
 
         for y in 0..section_count {
             for section in &block_columns[y] {
                 put_u64_le(&mut inner_handle.data, section.reverse_deltas.len() as u64);
             }
-            for section in &block_columns[y] {
+            for (k, section) in block_columns[y].iter().enumerate() {
                 for (j, snapshot) in section.reverse_deltas.iter().enumerate() {
                     if j == 0 {
-                        inner_handle.serialize_block_header_j0(snapshot, &mut counts, &mut unique);
+                        let blocks = snapshot.data.unpack();
+                        unique.clear();
+                        for &atom in blocks.iter() {
+                            if counts[atom as usize] == 0 {
+                                unique.push(atom);
+                            }
+                            counts[atom as usize] += 1;
+                        }
+                        unique.sort_unstable_by(|&a, &b| {
+                            counts[b as usize].cmp(&counts[a as usize]).then(a.cmp(&b))
+                        });
+                        inner_handle.serialize_block_header_j0(
+                            snapshot,
+                            &blocks,
+                            &unique,
+                            &mut counts,
+                        );
+                        j0_cache.push((blocks, std::mem::take(&mut unique)));
+                        j0_pos[y * SEGMENTS_PER_REGION + present_indices[k]] =
+                            j0_cache.len() as i32 - 1;
                     } else {
                         inner_handle.serialize_snapshot_header(snapshot, true);
                     }
@@ -354,25 +356,28 @@ impl WriteHandle {
             inner_handle.serialize_column_headers(column, false);
         }
 
-        let mut codec = ContextCodec::new(section_count);
+        let mut codec = ContextCodec::new_encoder(section_count);
         codec.reset(section_count);
         let mut val_to_local = vec![0u16; 65536];
 
+        let mut j0_idx = 0;
         for y in 0..section_count {
             for (k, section) in block_columns[y].iter().enumerate() {
                 if let Some(snapshot) = section.reverse_deltas.first() {
                     let seg_idx = present_indices[k];
                     let cx = seg_idx / 32;
                     let cz = seg_idx % 32;
+                    let (blocks, unique) = &j0_cache[j0_idx];
+                    j0_idx += 1;
+                    let src = NeighborSource::new(&j0_cache, &j0_pos, section_count, cx, cz, y);
                     inner_handle.serialize_block_body_j0(
                         snapshot,
+                        blocks,
+                        unique,
                         &mut codec,
-                        cx,
-                        cz,
-                        y,
                         &mut counts,
-                        &mut unique,
                         &mut val_to_local,
+                        &src,
                     );
                 }
             }
