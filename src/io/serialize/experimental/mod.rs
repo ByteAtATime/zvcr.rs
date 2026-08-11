@@ -1,6 +1,7 @@
 pub(crate) mod bitplane;
 pub(crate) mod file;
 pub(crate) mod reader;
+pub(crate) mod rans;
 pub(crate) mod rle;
 pub(crate) mod writer;
 
