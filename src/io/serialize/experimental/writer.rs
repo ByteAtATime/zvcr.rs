@@ -1,11 +1,13 @@
 use super::File;
+use super::coder::context::ContextCodec;
+use crate::definitions::*;
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
 use crate::io::serialize::primitives::*;
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{Data, PackedSnapshot};
-use crate::region::palette::{DIRECT_PALETTE, Palette};
+use crate::region::palette::{DIRECT_PALETTE, Palette, bits_per_entry};
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
@@ -16,6 +18,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub(crate) type PaletteTable = AHashMap<Palette, usize>;
+
+const BITPLANE_THRESHOLD: usize = 4;
 
 pub(crate) struct WriteHandle {
     pub(crate) compression_level: i32,
@@ -49,17 +53,13 @@ impl WriteHandle {
             ordered[index] = palette.clone();
         }
 
-        put_u32_le(buf, ordered.len() as u32);
-        for palette in &ordered {
-            let len = palette.length();
-            if palette.direct() || len == 1 {
-                continue;
-            }
-            put_u16_le(buf, len as u16);
-            for &atom in palette.palette.iter() {
-                put_u16_le(buf, atom);
-            }
-        }
+        let entries: Vec<Vec<u16>> = ordered
+            .iter()
+            .map(|p| p.palette.iter().copied().collect())
+            .collect();
+        let encoded = super::coder::palette::encode_palette_table(&entries);
+        put_u32_le(buf, encoded.len() as u32);
+        buf.extend_from_slice(&encoded);
     }
 
     pub(crate) fn record_palette_index(&mut self, palette: &Palette, is_block: bool) {
@@ -98,7 +98,8 @@ impl WriteHandle {
                 self.record_palette_index(&paletted.palette, is_block);
                 if !paletted.palette.direct() {
                     let bits = paletted.palette.bits_per_entry as u8;
-                    let remapped = super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
+                    let remapped =
+                        super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
                     put_u8(
                         &mut self.data,
                         super::bitplane::compute_plane_mask(&remapped, bits),
@@ -138,6 +139,111 @@ impl WriteHandle {
         super::rle::encode(&self.plane_scratch[..byte_len], &mut self.encode_scratch);
         put_u16_le(&mut self.data, self.encode_scratch.len() as u16);
         put_bytes(&mut self.data, &self.encode_scratch);
+    }
+
+    pub(crate) fn serialize_block_header_j0(
+        &mut self,
+        snapshot: &PackedSnapshot<SECTION_SIZE_BLOCKS>,
+        counts: &mut [u32],
+        unique: &mut Vec<u16>,
+    ) {
+        put_u64_le(&mut self.data, snapshot.timestamp as u64);
+        let blocks = snapshot.data.unpack();
+
+        unique.clear();
+        for &atom in blocks.iter() {
+            if counts[atom as usize] == 0 {
+                unique.push(atom);
+            }
+            counts[atom as usize] += 1;
+        }
+        unique
+            .sort_unstable_by(|&a, &b| counts[b as usize].cmp(&counts[a as usize]).then(a.cmp(&b)));
+
+        if unique.len() <= 1 {
+            put_u8(&mut self.data, 0);
+            put_u16_le(&mut self.data, unique.first().copied().unwrap_or(0));
+        } else if unique.len() <= BITPLANE_THRESHOLD {
+            put_u8(&mut self.data, 1);
+            let Data::Paletted(paletted) = &snapshot.data.data else {
+                unreachable!()
+            };
+            self.record_palette_index(&paletted.palette, true);
+            if !paletted.palette.direct() {
+                let bits = paletted.palette.bits_per_entry as u8;
+                let remapped =
+                    super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
+                put_u8(
+                    &mut self.data,
+                    super::bitplane::compute_plane_mask(&remapped, bits),
+                );
+            }
+        } else {
+            put_u8(&mut self.data, 11);
+            let palette = Palette {
+                palette: unique.clone().into(),
+                bits_per_entry: bits_per_entry(unique.len()),
+            };
+            self.record_palette_index(&palette, true);
+        }
+
+        for &atom in unique.iter() {
+            counts[atom as usize] = 0;
+        }
+    }
+
+    pub(crate) fn serialize_block_body_j0(
+        &mut self,
+        snapshot: &PackedSnapshot<SECTION_SIZE_BLOCKS>,
+        codec: &mut ContextCodec,
+        cx: usize,
+        cz: usize,
+        sec_idx: usize,
+        counts: &mut [u32],
+        unique: &mut Vec<u16>,
+        val_to_local: &mut [u16],
+    ) {
+        let blocks = snapshot.data.unpack();
+
+        unique.clear();
+        for &atom in blocks.iter() {
+            if counts[atom as usize] == 0 {
+                unique.push(atom);
+            }
+            counts[atom as usize] += 1;
+        }
+        unique
+            .sort_unstable_by(|&a, &b| counts[b as usize].cmp(&counts[a as usize]).then(a.cmp(&b)));
+
+        codec.write_recon(&blocks, cx, cz, sec_idx);
+
+        if unique.len() <= 1 {
+            for &atom in unique.iter() {
+                counts[atom as usize] = 0;
+            }
+            return;
+        }
+
+        if unique.len() <= BITPLANE_THRESHOLD {
+            self.serialize_snapshot_body(snapshot);
+            for &atom in unique.iter() {
+                counts[atom as usize] = 0;
+            }
+            return;
+        }
+
+        for (local, &atom) in unique.iter().enumerate() {
+            val_to_local[atom as usize] = local as u16;
+        }
+
+        let encoded = codec.encode_section(&blocks, val_to_local, cx, cz, sec_idx);
+        put_u32_le(&mut self.data, encoded.len() as u32);
+        put_bytes(&mut self.data, &encoded);
+
+        for &atom in unique.iter() {
+            counts[atom as usize] = 0;
+            val_to_local[atom as usize] = 0;
+        }
     }
 
     pub(crate) fn serialize_column_headers<const UNPACKED_SIZE: usize>(
@@ -198,9 +304,15 @@ impl WriteHandle {
         let section_count = inner_handle.ctx.section_count;
 
         let present: Vec<&Arc<Segment>> = region.segments.iter().flatten().collect();
+        let present_indices: Vec<usize> = (0..SEGMENTS_PER_REGION)
+            .filter(|&i| region.segments[i].is_some())
+            .collect();
 
         for segment in &region.segments {
-            put_u8(&mut inner_handle.data, if segment.is_some() { 1 } else { 0 });
+            put_u8(
+                &mut inner_handle.data,
+                if segment.is_some() { 1 } else { 0 },
+            );
         }
 
         let block_columns: Vec<Vec<_>> = (0..section_count)
@@ -220,25 +332,60 @@ impl WriteHandle {
             })
             .collect();
 
-        for column in &block_columns {
-            inner_handle.serialize_column_headers(column, true);
+        let mut counts = vec![0u32; 65536];
+        let mut unique = Vec::new();
+
+        for y in 0..section_count {
+            for section in &block_columns[y] {
+                put_u64_le(&mut inner_handle.data, section.reverse_deltas.len() as u64);
+            }
+            for section in &block_columns[y] {
+                for (j, snapshot) in section.reverse_deltas.iter().enumerate() {
+                    if j == 0 {
+                        inner_handle.serialize_block_header_j0(snapshot, &mut counts, &mut unique);
+                    } else {
+                        inner_handle.serialize_snapshot_header(snapshot, true);
+                    }
+                }
+            }
         }
+
         for column in &biome_columns {
             inner_handle.serialize_column_headers(column, false);
         }
 
-        for column in &block_columns {
-            for section in column {
+        let mut codec = ContextCodec::new(section_count);
+        codec.reset(section_count);
+        let mut val_to_local = vec![0u16; 65536];
+
+        for y in 0..section_count {
+            for (k, section) in block_columns[y].iter().enumerate() {
                 if let Some(snapshot) = section.reverse_deltas.first() {
-                    inner_handle.serialize_snapshot_body(snapshot);
+                    let seg_idx = present_indices[k];
+                    let cx = seg_idx / 32;
+                    let cz = seg_idx % 32;
+                    inner_handle.serialize_block_body_j0(
+                        snapshot,
+                        &mut codec,
+                        cx,
+                        cz,
+                        y,
+                        &mut counts,
+                        &mut unique,
+                        &mut val_to_local,
+                    );
                 }
             }
-            for section in column {
+        }
+
+        for y in 0..section_count {
+            for section in &block_columns[y] {
                 for snapshot in section.reverse_deltas.iter().skip(1) {
                     inner_handle.serialize_snapshot_body(snapshot);
                 }
             }
         }
+
         for column in &biome_columns {
             for section in column {
                 if let Some(snapshot) = section.reverse_deltas.first() {

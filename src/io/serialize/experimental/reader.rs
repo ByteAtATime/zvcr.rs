@@ -2,13 +2,14 @@ use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
+use super::coder::context::ContextCodec;
 use super::File;
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::io::serialize::primitives::ByteCursor;
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
-use crate::region::palette::{DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette, bits_per_entry};
+use crate::region::palette::{DIRECT_PALETTE, Palette, PackScratch, bits_per_entry};
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
@@ -18,6 +19,17 @@ use std::path::Path;
 use std::sync::Arc;
 use std::ops::{Deref, DerefMut};
 
+#[derive(Clone, Copy)]
+pub(crate) struct BodyPlanEntry {
+    k: usize,
+    j: usize,
+    byte_len: usize,
+    mask: u8,
+    direct: bool,
+    active: bool,
+    is_context_coded: bool,
+}
+
 pub(crate) struct ReadHandle {
     pub(crate) ctx: Context,
     cursor: ByteCursor,
@@ -25,6 +37,7 @@ pub(crate) struct ReadHandle {
     version: Version,
     plane_scratch: Vec<u8>,
     encoded_scratch: Vec<u8>,
+    pack_scratch: PackScratch,
 }
 
 impl Deref for ReadHandle {
@@ -49,6 +62,7 @@ impl ReadHandle {
             version: ZVCR3D_LATEST_VERSION,
             plane_scratch: Vec::new(),
             encoded_scratch: Vec::new(),
+            pack_scratch: PackScratch::new(),
         }
     }
 
@@ -83,30 +97,17 @@ impl ReadHandle {
     }
 
     pub(crate) fn deserialize_palette_table(&mut self, table: &mut Vec<Palette>) -> Result<(), ReadError> {
-        let len = self.read_u32()?;
-        if len > MAX_PALETTE_TABLE_LENGTH {
-            return Err(ReadError::LengthExceeded(
-                "Palette table length too high".to_string(),
-            ));
-        }
-        table.reserve(len as usize);
-
-        for _ in 0..len {
-            let palette_len = self.read_u16()? as usize;
-            if palette_len > MAX_INDIRECT_PALETTE_SIZE {
-                let skip_bytes = palette_len * std::mem::size_of::<SegmentAtom>();
-                self.pos += skip_bytes;
-                table.push(DIRECT_PALETTE.clone());
-                continue;
-            }
-
-            let mut palette_vec = vec![0u16; palette_len];
-            for atom in palette_vec.iter_mut() {
-                *atom = self.read_u16()?;
-            }
+        let blob_len = self.read_u32()? as usize;
+        let mut blob = vec![0u8; blob_len];
+        self.read_exact(&mut blob)?;
+        let entries = super::coder::palette::decode_palette_table(&blob)
+            .map_err(|e| ReadError::Generic(format!("Palette decode: {e}")))?;
+        table.reserve(entries.len());
+        for atoms in entries {
+            let palette_len = atoms.len();
             let bpe = bits_per_entry(palette_len);
             table.push(Palette {
-                palette: palette_vec.into(),
+                palette: atoms.into(),
                 bits_per_entry: bpe,
             });
         }
@@ -119,7 +120,7 @@ impl ReadHandle {
         palette_table: &[Palette],
     ) -> Result<(
         Vec<PackedDeltaData<UNPACKED_SIZE>>,
-        Vec<(usize, usize, usize, u8, bool, bool)>,
+        Vec<BodyPlanEntry>,
     ), ReadError> {
         let mut counts = Vec::with_capacity(column_length);
         for _ in 0..column_length {
@@ -146,7 +147,7 @@ impl ReadHandle {
             })
             .collect();
 
-        let mut body_plan: Vec<(usize, usize, usize, u8, bool, bool)> = Vec::new();
+        let mut body_plan: Vec<BodyPlanEntry> = Vec::new();
 
         for (section_index, &count) in counts.iter().enumerate() {
             for delta_index in 0..count {
@@ -164,6 +165,42 @@ impl ReadHandle {
                             timestamp,
                         };
                     }
+                    continue;
+                }
+
+                if data_type == 11 {
+                    let palette_index = self.read_u32()?;
+                    let palette = if palette_index == u32::MAX {
+                        DIRECT_PALETTE.clone()
+                    } else {
+                        if palette_index as usize >= palette_table.len() {
+                            return Err(ReadError::InvalidPaletteIndex {
+                                index: palette_index,
+                                max: palette_table.len(),
+                            });
+                        }
+                        palette_table[palette_index as usize].clone()
+                    };
+                    if active {
+                        sections[section_index].reverse_deltas[delta_index] = PackedSnapshot {
+                            data: PackedData {
+                                data: Data::Paletted(PalettedData {
+                                    packed_long_array: Vec::new(),
+                                    palette,
+                                }),
+                            },
+                            timestamp,
+                        };
+                    }
+                    body_plan.push(BodyPlanEntry {
+                        k: section_index,
+                        j: delta_index,
+                        byte_len: 0,
+                        mask: 0,
+                        direct: false,
+                        active,
+                        is_context_coded: true,
+                    });
                     continue;
                 }
 
@@ -204,9 +241,25 @@ impl ReadHandle {
                         },
                         timestamp,
                     };
-                    body_plan.push((section_index, delta_index, byte_len, mask, direct, true));
+                    body_plan.push(BodyPlanEntry {
+                        k: section_index,
+                        j: delta_index,
+                        byte_len,
+                        mask,
+                        direct,
+                        active: true,
+                        is_context_coded: false,
+                    });
                 } else {
-                    body_plan.push((section_index, delta_index, byte_len, mask, direct, false));
+                    body_plan.push(BodyPlanEntry {
+                        k: section_index,
+                        j: delta_index,
+                        byte_len,
+                        mask,
+                        direct,
+                        active: false,
+                        is_context_coded: false,
+                    });
                 }
             }
         }
@@ -287,6 +340,38 @@ impl ReadHandle {
         );
         super::bitplane::remap_from_popcount(&mut packed_longs, bits as u8);
         paletted.packed_long_array = packed_longs;
+        Ok(())
+    }
+
+    pub(crate) fn read_context_body(
+        &mut self,
+        snapshot: &mut PackedSnapshot<SECTION_SIZE_BLOCKS>,
+        codec: &mut ContextCodec,
+        cx: usize,
+        cz: usize,
+        sec_idx: usize,
+        active: bool,
+    ) -> Result<(), ReadError> {
+        let ans_len = self.read_u32()? as usize;
+
+        if !active {
+            self.pos += ans_len;
+            return Ok(());
+        }
+
+        let mut ans_bytes = vec![0u8; ans_len];
+        self.read_exact(&mut ans_bytes)?;
+
+        let palette_atoms: Vec<u16> = match &snapshot.data.data {
+            Data::Paletted(paletted) => paletted.palette.palette.iter().copied().collect(),
+            _ => return Ok(()),
+        };
+
+        let blocks = codec
+            .decode_section(&ans_bytes, &palette_atoms, cx, cz, sec_idx)
+            .map_err(ReadError::Generic)?;
+
+        snapshot.data = PackedData::pack_with(&blocks, &mut self.pack_scratch);
         Ok(())
     }
 
@@ -399,7 +484,7 @@ impl ReadHandle {
 
         let mut block_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>>> =
             Vec::with_capacity(section_count);
-        let mut block_body_plans: Vec<Vec<(usize, usize, usize, u8, bool, bool)>> =
+        let mut block_body_plans: Vec<Vec<BodyPlanEntry>> =
             Vec::with_capacity(section_count);
         for _ in 0..section_count {
             let (column, plan) =
@@ -410,7 +495,7 @@ impl ReadHandle {
 
         let mut biome_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BIOMES>>> =
             Vec::with_capacity(section_count);
-        let mut biome_body_plans: Vec<Vec<(usize, usize, usize, u8, bool, bool)>> =
+        let mut biome_body_plans: Vec<Vec<BodyPlanEntry>> =
             Vec::with_capacity(section_count);
         for _ in 0..section_count {
             let (column, plan) =
@@ -434,34 +519,97 @@ impl ReadHandle {
             }
         }
 
+        let mut codec = ContextCodec::new(section_count);
+        codec.reset(section_count);
+
+        for y in 0..section_count {
+            let mut bp_iter = block_body_plans[y]
+                .iter()
+                .filter(|e| e.j == 0)
+                .peekable();
+            for k in 0..present_count {
+                let i = present_indices[k];
+                let cx = i / 32;
+                let cz = i % 32;
+                let seg = segments[i].as_mut().unwrap();
+
+                if bp_iter.peek().map_or(false, |e| e.k == k) {
+                    let entry = *bp_iter.next().unwrap();
+                    let snapshot =
+                        &mut seg.block_sections.sections[y].reverse_deltas[entry.j];
+                    if entry.is_context_coded {
+                        self.read_context_body(
+                            snapshot,
+                            &mut codec,
+                            cx,
+                            cz,
+                            y,
+                            entry.active,
+                        )?;
+                    } else {
+                        self.read_snapshot_body_into(
+                            entry.byte_len,
+                            entry.mask,
+                            entry.direct,
+                            entry.active,
+                            snapshot,
+                        )?;
+                        if entry.active {
+                            let blocks = snapshot.data.unpack();
+                            codec.write_recon(&blocks, cx, cz, y);
+                        }
+                    }
+                } else {
+                    if seg.block_sections.sections[y].reverse_deltas.is_empty() {
+                        continue;
+                    }
+                    let snapshot = &seg.block_sections.sections[y].reverse_deltas[0];
+                    let blocks = snapshot.data.unpack();
+                    codec.write_recon(&blocks, cx, cz, y);
+                }
+            }
+        }
+
         for y in 0..section_count {
             let plan = &block_body_plans[y];
-            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 == 0) {
-                let i = present_indices[k];
+            for entry in plan.iter().filter(|e| e.j != 0) {
+                let i = present_indices[entry.k];
                 let seg = segments[i].as_mut().unwrap();
-                let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
-            }
-            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 != 0) {
-                let i = present_indices[k];
-                let seg = segments[i].as_mut().unwrap();
-                let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
+                let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[entry.j];
+                self.read_snapshot_body_into(
+                    entry.byte_len,
+                    entry.mask,
+                    entry.direct,
+                    entry.active,
+                    snapshot,
+                )?;
             }
         }
         for y in 0..section_count {
             let plan = &biome_body_plans[y];
-            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 == 0) {
-                let i = present_indices[k];
+            for entry in plan.iter().filter(|e| e.j == 0) {
+                let i = present_indices[entry.k];
                 let seg = segments[i].as_mut().unwrap();
-                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
+                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[entry.j];
+                self.read_snapshot_body_into(
+                    entry.byte_len,
+                    entry.mask,
+                    entry.direct,
+                    entry.active,
+                    snapshot,
+                )?;
             }
-            for &(k, j, byte_len, mask, direct, active) in plan.iter().filter(|p| p.1 != 0) {
-                let i = present_indices[k];
+            for entry in plan.iter().filter(|e| e.j != 0) {
+                let i = present_indices[entry.k];
                 let seg = segments[i].as_mut().unwrap();
-                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[j];
-                self.read_snapshot_body_into(byte_len, mask, direct, active, snapshot)?;
+                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[entry.j];
+                self.read_snapshot_body_into(
+                    entry.byte_len,
+                    entry.mask,
+                    entry.direct,
+                    entry.active,
+                    snapshot,
+                )?;
             }
         }
 

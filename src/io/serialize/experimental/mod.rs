@@ -1,4 +1,5 @@
 pub(crate) mod bitplane;
+pub(crate) mod coder;
 pub(crate) mod file;
 pub(crate) mod reader;
 pub(crate) mod rans;
@@ -174,6 +175,39 @@ mod tests {
                         a.tile_entities.reverse_deltas,
                         b.tile_entities.reverse_deltas
                     );
+                }
+                _ => panic!("segment {i} presence mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn full_byte_roundtrip_preserves_data() {
+        let file = read_experimental_file();
+        let region_data = reconstruct_region(&file);
+
+        let bytes = serialize_file_to_vec(&file, ZSTD_COMPRESSION_LEVEL_DEFAULT).unwrap();
+
+        let reader = ExperimentalReader::new(0);
+        let decoded = reader.from_bytes(&bytes).unwrap();
+
+        for i in 0..SEGMENTS_PER_REGION {
+            match (&region_data.segments[i], &decoded.segments[i]) {
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    assert_eq!(
+                        a.block_sections.len(),
+                        b.block_sections.len(),
+                        "block section count mismatch for segment {i}"
+                    );
+                    for s in 0..a.block_sections.len() {
+                        let orig = a.block_sections[s].reverse_deltas[0].data.unpack();
+                        let dec = b.block_sections[s].reverse_deltas[0].data.unpack();
+                        assert_eq!(orig, dec, "block section {i}/{s} mismatch");
+                        let orig_biome = a.biome_sections[s].reverse_deltas[0].data.unpack();
+                        let dec_biome = b.biome_sections[s].reverse_deltas[0].data.unpack();
+                        assert_eq!(orig_biome, dec_biome, "biome section {i}/{s} mismatch");
+                    }
                 }
                 _ => panic!("segment {i} presence mismatch"),
             }
