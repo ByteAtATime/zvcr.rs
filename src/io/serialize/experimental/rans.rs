@@ -85,6 +85,29 @@ impl<'a> RansDecoder<'a> {
     }
 }
 
+static DIV_MAGIC: [(u32, u32); 20] = [
+    (0, 0),
+    (0, 0),
+    (0, 0),
+    (2731, 13),
+    (1024, 12),
+    (3277, 14),
+    (2731, 14),
+    (2341, 14),
+    (512, 12),
+    (3641, 15),
+    (3277, 15),
+    (2979, 15),
+    (2731, 15),
+    (2521, 15),
+    (2341, 15),
+    (2185, 15),
+    (256, 12),
+    (241, 12),
+    (3641, 16),
+    (1725, 15),
+];
+
 #[derive(Clone, Copy)]
 pub(crate) struct BitChance {
     p: u16,
@@ -142,10 +165,11 @@ impl BitChance {
         let n = self.count as u32 + delta;
         let p = self.p as u32;
         let target = if bit == 0 { ANS_M } else { 0u32 };
+        let (mul, shift) = DIV_MAGIC[n as usize];
         let new_p = if target >= p {
-            p + (target - p) / n
+            p + ((target - p).wrapping_mul(mul) >> shift)
         } else {
-            p - (p - target) / n
+            p - ((p - target).wrapping_mul(mul) >> shift)
         };
         self.p = new_p.clamp(1, ANS_M - 1) as u16;
     }
