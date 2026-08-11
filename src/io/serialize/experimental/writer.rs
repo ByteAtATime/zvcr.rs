@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 pub(crate) type PaletteTable = AHashMap<Palette, usize>;
 
-const BITPLANE_THRESHOLD: usize = 4;
+pub(crate) const BITPLANE_THRESHOLD: usize = 4;
 
 pub(crate) struct WriteHandle {
     pub(crate) compression_level: i32,
