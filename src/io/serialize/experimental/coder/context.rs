@@ -33,17 +33,90 @@ fn bucket_for_length(n: usize) -> usize {
     n.min(CTX_LIST_CAP)
 }
 
+struct OverflowList {
+    syms: Vec<u16>,
+    freqs: Vec<u32>,
+}
+
+struct ContextSlot {
+    rank0_sym: u16,
+    len: u8,
+    rank0_freq: u32,
+    hits: u32,
+    chance0: BitChance,
+    chances: [BitChance; 3],
+    syms: [u16; 3],
+    freqs: [u32; 3],
+    overflow: Option<Box<OverflowList>>,
+}
+
+impl ContextSlot {
+    fn empty() -> Self {
+        Self {
+            rank0_sym: 0,
+            len: 0,
+            rank0_freq: 0,
+            hits: 0,
+            chance0: BitChance::fresh(),
+            chances: [BitChance::fresh(); 3],
+            syms: [0; 3],
+            freqs: [0; 3],
+            overflow: None,
+        }
+    }
+
+    #[inline]
+    fn sym(&self, rank: usize) -> u16 {
+        if rank == 0 {
+            self.rank0_sym
+        } else if rank <= 3 {
+            self.syms[rank - 1]
+        } else {
+            self.overflow.as_ref().unwrap().syms[rank - 4]
+        }
+    }
+
+    #[inline]
+    fn freq(&self, rank: usize) -> u32 {
+        if rank == 0 {
+            self.rank0_freq
+        } else if rank <= 3 {
+            self.freqs[rank - 1]
+        } else {
+            self.overflow.as_ref().unwrap().freqs[rank - 4]
+        }
+    }
+
+    #[inline]
+    fn set_sym(&mut self, rank: usize, v: u16) {
+        if rank == 0 {
+            self.rank0_sym = v;
+        } else if rank <= 3 {
+            self.syms[rank - 1] = v;
+        } else {
+            self.overflow.as_mut().unwrap().syms[rank - 4] = v;
+        }
+    }
+
+    #[inline]
+    fn set_freq(&mut self, rank: usize, v: u32) {
+        if rank == 0 {
+            self.rank0_freq = v;
+        } else if rank <= 3 {
+            self.freqs[rank - 1] = v;
+        } else {
+            self.overflow.as_mut().unwrap().freqs[rank - 4] = v;
+        }
+    }
+}
+
 struct ContextModel {
-    ctx_syms: Vec<Vec<u16>>,
-    ctx_freq: Vec<Vec<u32>>,
-    ctx_hits: Vec<u32>,
-    ctx_rank0_sym: Vec<u16>,
-    ctx_rank0_freq: Vec<u32>,
+    heads: Vec<u32>,
+    entries: Vec<ContextSlot>,
     global_syms: Vec<u16>,
     global_freqs: Vec<u32>,
     global_positions: Vec<i32>,
     global_hits: u32,
-    rank_chances: [Vec<BitChance>; 4],
     rank_coders: Vec<Box<NzCoder>>,
     global_rank_coder: Box<NzCoder>,
     literal_coder: Box<NzCoder>,
@@ -52,42 +125,48 @@ struct ContextModel {
 
 impl ContextModel {
     fn new() -> Self {
-        let fresh = BitChance::fresh();
         Self {
-            ctx_syms: (0..CTX_COUNT).map(|_| Vec::new()).collect(),
-            ctx_freq: (0..CTX_COUNT).map(|_| Vec::new()).collect(),
-            ctx_hits: vec![0; CTX_COUNT],
-            ctx_rank0_sym: vec![0; CTX_COUNT],
-            ctx_rank0_freq: vec![0; CTX_COUNT],
+            heads: vec![0u32; CTX_COUNT],
+            entries: vec![ContextSlot::empty()],
             global_syms: Vec::with_capacity(256),
             global_freqs: Vec::with_capacity(256),
             global_positions: vec![-1i32; 65536],
             global_hits: 0,
-            rank_chances: [
-                vec![fresh; CTX_COUNT],
-                vec![fresh; CTX_COUNT],
-                vec![fresh; CTX_COUNT],
-                vec![fresh; CTX_COUNT],
-            ],
             rank_coders: (0..(3 * LEN_BUCKETS)).map(|_| NzCoder::new()).collect(),
             global_rank_coder: NzCoder::new(),
             literal_coder: NzCoder::new(),
-            touched_contexts: Vec::with_capacity(8192),
+            touched_contexts: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn ctx_idx(&mut self, ctx: usize) -> usize {
+        let h = self.heads[ctx];
+        if h != 0 {
+            h as usize
+        } else {
+            let i = self.entries.len();
+            self.entries.push(ContextSlot::empty());
+            self.heads[ctx] = i as u32;
+            self.touched_contexts.push(ctx as u32);
+            i
         }
     }
 
     fn reset(&mut self) {
         for &ctx in &self.touched_contexts {
             let c = ctx as usize;
-            self.ctx_syms[c].clear();
-            self.ctx_freq[c].clear();
-            self.ctx_hits[c] = 0;
+            let ci = self.heads[c] as usize;
+            self.heads[c] = 0;
+            self.entries[ci].len = 0;
+            self.entries[ci].overflow = None;
+            self.entries[ci].hits = 0;
             let fresh = BitChance::fresh();
-            for chances in self.rank_chances.iter_mut() {
-                chances[c] = fresh;
-            }
+            self.entries[ci].chance0 = fresh;
+            self.entries[ci].chances = [fresh, fresh, fresh];
         }
         self.touched_contexts.clear();
+        self.entries.truncate(1);
 
         for &sym in &self.global_syms {
             self.global_positions[sym as usize] = -1;
@@ -104,27 +183,36 @@ impl ContextModel {
     }
 
     #[inline]
-    fn bump_context(&mut self, ctx: usize, mut rank: usize) {
-        self.ctx_hits[ctx] += 1;
+    fn bump_context(&mut self, ci: usize, mut rank: usize) {
+        self.entries[ci].hits += 1;
         if rank == 0 {
-            self.ctx_rank0_freq[ctx] += 1;
+            self.entries[ci].rank0_freq += 1;
             return;
         }
-        let hysteresis = 1 + self.ctx_hits[ctx] / 32;
-        self.ctx_freq[ctx][rank] += 1;
-        let curr_freq = self.ctx_freq[ctx][rank] + hysteresis;
-        while rank > 1 && self.ctx_freq[ctx][rank - 1] <= curr_freq {
-            self.ctx_freq[ctx].swap(rank, rank - 1);
-            self.ctx_syms[ctx].swap(rank, rank - 1);
+        let hysteresis = 1 + self.entries[ci].hits / 32;
+        let new_freq = self.entries[ci].freq(rank) + 1;
+        self.entries[ci].set_freq(rank, new_freq);
+        let curr_freq = self.entries[ci].freq(rank) + hysteresis;
+        while rank > 1 && self.entries[ci].freq(rank - 1) <= curr_freq {
+            let hi_sym = self.entries[ci].sym(rank);
+            let hi_freq = self.entries[ci].freq(rank);
+            let lo_sym = self.entries[ci].sym(rank - 1);
+            let lo_freq = self.entries[ci].freq(rank - 1);
+            self.entries[ci].set_freq(rank, lo_freq);
+            self.entries[ci].set_sym(rank, lo_sym);
+            self.entries[ci].set_freq(rank - 1, hi_freq);
+            self.entries[ci].set_sym(rank - 1, hi_sym);
             rank -= 1;
         }
-        if rank == 1 && self.ctx_rank0_freq[ctx] <= curr_freq {
-            let old_f1 = self.ctx_freq[ctx][1];
-            let old_s1 = self.ctx_syms[ctx][1];
-            self.ctx_freq[ctx][1] = self.ctx_rank0_freq[ctx];
-            self.ctx_syms[ctx][1] = self.ctx_rank0_sym[ctx];
-            self.ctx_rank0_freq[ctx] = old_f1;
-            self.ctx_rank0_sym[ctx] = old_s1;
+        if rank == 1 && self.entries[ci].rank0_freq <= curr_freq {
+            let old_f1 = self.entries[ci].freq(1);
+            let old_s1 = self.entries[ci].sym(1);
+            let rank0_freq = self.entries[ci].rank0_freq;
+            let rank0_sym = self.entries[ci].rank0_sym;
+            self.entries[ci].set_freq(1, rank0_freq);
+            self.entries[ci].set_sym(1, rank0_sym);
+            self.entries[ci].rank0_freq = old_f1;
+            self.entries[ci].rank0_sym = old_s1;
         }
     }
 
@@ -142,34 +230,48 @@ impl ContextModel {
         }
     }
 
-    fn insert_context(&mut self, ctx: usize, sym: u16) {
-        let len = self.ctx_syms[ctx].len();
+    fn insert_context(&mut self, ci: usize, sym: u16) {
+        let len = self.entries[ci].len as usize;
         if len == 0 {
-            self.touched_contexts.push(ctx as u32);
-            self.ctx_rank0_sym[ctx] = sym;
-            self.ctx_rank0_freq[ctx] = 1;
+            self.entries[ci].rank0_sym = sym;
+            self.entries[ci].rank0_freq = 1;
+            self.entries[ci].len = 1;
+            return;
         }
         if len < CTX_LIST_CAP {
-            self.ctx_syms[ctx].push(sym);
-            self.ctx_freq[ctx].push(1);
+            let new_rank = len;
+            if new_rank <= 3 {
+                self.entries[ci].set_sym(new_rank, sym);
+                self.entries[ci].set_freq(new_rank, 1);
+            } else {
+                if self.entries[ci].overflow.is_none() {
+                    self.entries[ci].overflow = Some(Box::new(OverflowList {
+                        syms: Vec::new(),
+                        freqs: Vec::new(),
+                    }));
+                }
+                let overflow = self.entries[ci].overflow.as_mut().unwrap();
+                overflow.syms.push(sym);
+                overflow.freqs.push(1);
+            }
+            self.entries[ci].len = (len + 1) as u8;
             return;
         }
         let mut coldest = 0usize;
-        let mut coldest_freq = self.ctx_rank0_freq[ctx];
+        let mut coldest_freq = self.entries[ci].rank0_freq;
         for i in 1..len {
-            let f = self.ctx_freq[ctx][i];
+            let f = self.entries[ci].freq(i);
             if f < coldest_freq {
                 coldest = i;
                 coldest_freq = f;
             }
         }
         if coldest == 0 {
-            self.ctx_rank0_sym[ctx] = sym;
-            self.ctx_rank0_freq[ctx] = 1;
-            self.ctx_syms[ctx][0] = sym;
+            self.entries[ci].rank0_sym = sym;
+            self.entries[ci].rank0_freq = 1;
         } else {
-            self.ctx_syms[ctx][coldest] = sym;
-            self.ctx_freq[ctx][coldest] = 1;
+            self.entries[ci].set_sym(coldest, sym);
+            self.entries[ci].set_freq(coldest, 1);
         }
     }
 
@@ -184,9 +286,10 @@ impl ContextModel {
         local_sym: u16,
     ) {
         let ctx = hash_context(west, down, north, down2);
-        let n_syms = self.ctx_syms[ctx].len();
+        let ci = self.ctx_idx(ctx);
+        let n_syms = self.entries[ci].len as usize;
 
-        if n_syms > 0 && self.try_encode_rank(recs, ctx, n_syms, west, down, north, sym) {
+        if n_syms > 0 && self.try_encode_rank(recs, ci, n_syms, west, down, north, sym) {
             return;
         }
 
@@ -198,46 +301,46 @@ impl ContextModel {
         }
 
         self.encode_global(recs, sym, local_sym);
-        self.insert_context(ctx, sym);
+        self.insert_context(ci, sym);
     }
 
     fn try_encode_rank(
         &mut self,
         recs: &mut Vec<BitRec>,
-        ctx: usize,
+        ci: usize,
         n_syms: usize,
         west: u16,
         down: u16,
         north: u16,
         sym: u16,
     ) -> bool {
-        if self.ctx_rank0_sym[ctx] == sym {
-            self.rank_chances[0][ctx].record_bit(recs, 0, ZERO_LIMIT, ZERO_DELTA);
-            self.bump_context(ctx, 0);
+        if self.entries[ci].rank0_sym == sym {
+            self.entries[ci].chance0.record_bit(recs, 0, ZERO_LIMIT, ZERO_DELTA);
+            self.bump_context(ci, 0);
             return true;
         }
-        self.rank_chances[0][ctx].record_bit(recs, 1, ZERO_LIMIT, ZERO_DELTA);
+        self.entries[ci].chance0.record_bit(recs, 1, ZERO_LIMIT, ZERO_DELTA);
 
         for rank in 1..n_syms.min(4) {
-            let matched = self.ctx_syms[ctx][rank] == sym;
-            self.rank_chances[rank][ctx].record_bit(
+            let matched = self.entries[ci].sym(rank) == sym;
+            self.entries[ci].chances[rank - 1].record_bit(
                 recs,
                 if matched { 0 } else { 1 },
                 ZERO_LIMIT,
                 ZERO_DELTA,
             );
             if matched {
-                self.bump_context(ctx, rank);
+                self.bump_context(ci, rank);
                 return true;
             }
         }
 
         for rank in 4..n_syms {
-            if self.ctx_syms[ctx][rank] == sym {
+            if self.entries[ci].sym(rank) == sym {
                 let agr = neighbor_agreement(west, down, north);
                 let nz_idx = agr * LEN_BUCKETS + bucket_for_length(n_syms);
                 self.rank_coders[nz_idx].encode(recs, (rank - 4) as u32);
-                self.bump_context(ctx, rank);
+                self.bump_context(ci, rank);
                 return true;
             }
         }
@@ -271,38 +374,39 @@ impl ContextModel {
         palette: &[u16],
     ) -> Result<u16, String> {
         let ctx = hash_context(west, down, north, down2);
-        let n_syms = self.ctx_syms[ctx].len();
+        let ci = self.ctx_idx(ctx);
+        let n_syms = self.entries[ci].len as usize;
 
         if n_syms > 0 {
-            if let Some(sym) = self.try_decode_rank(dec, ctx, n_syms, west, down, north)? {
+            if let Some(sym) = self.try_decode_rank(dec, ci, n_syms, west, down, north)? {
                 return Ok(sym);
             }
         }
 
         let sym = self.decode_global(dec, palette)?;
-        self.insert_context(ctx, sym);
+        self.insert_context(ci, sym);
         Ok(sym)
     }
 
     fn try_decode_rank(
         &mut self,
         dec: &mut RansDecoder,
-        ctx: usize,
+        ci: usize,
         n_syms: usize,
         west: u16,
         down: u16,
         north: u16,
     ) -> Result<Option<u16>, String> {
-        if self.rank_chances[0][ctx].decode_bit(dec, ZERO_LIMIT, ZERO_DELTA) == 0 {
-            let sym = self.ctx_rank0_sym[ctx];
-            self.bump_context(ctx, 0);
+        if self.entries[ci].chance0.decode_bit(dec, ZERO_LIMIT, ZERO_DELTA) == 0 {
+            let sym = self.entries[ci].rank0_sym;
+            self.bump_context(ci, 0);
             return Ok(Some(sym));
         }
 
         for rank in 1..n_syms.min(4) {
-            if self.rank_chances[rank][ctx].decode_bit(dec, ZERO_LIMIT, ZERO_DELTA) == 0 {
-                let sym = self.ctx_syms[ctx][rank];
-                self.bump_context(ctx, rank);
+            if self.entries[ci].chances[rank - 1].decode_bit(dec, ZERO_LIMIT, ZERO_DELTA) == 0 {
+                let sym = self.entries[ci].sym(rank);
+                self.bump_context(ci, rank);
                 return Ok(Some(sym));
             }
         }
@@ -322,8 +426,8 @@ impl ContextModel {
                 "context decode rank {r} out of range for ctx list len {n_syms}"
             ));
         }
-        let sym = self.ctx_syms[ctx][r];
-        self.bump_context(ctx, r);
+        let sym = self.entries[ci].sym(r);
+        self.bump_context(ci, r);
         Ok(Some(sym))
     }
 
