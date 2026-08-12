@@ -33,10 +33,7 @@ pub fn compress_zstd_parts(parts: &[&[u8]], compression_level: i32) -> Result<Ve
     let result = ZSTD_COMPRESSOR.with(|cell| {
         let mut guard = cell.borrow_mut();
 
-        if guard
-            .as_ref()
-            .map_or(true, |c| c.level != compression_level)
-        {
+        if guard.as_ref().is_none_or(|c| c.level != compression_level) {
             let compressor = Compressor::new(compression_level)
                 .map_err(|e| format!("Failed to create bulk compressor: {e}"))?;
             *guard = Some(CachedCompressor {
