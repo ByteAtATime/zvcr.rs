@@ -47,8 +47,8 @@ mod tests {
     fn read_succeeds_with_zero_and_one_max_deltas() {
         let dir = std::path::Path::new("test_files");
         let location = RegionLocation {
-            rx: -1,
-            rz: -1,
+            rx: 0,
+            rz: 0,
             dimension_type: DimensionType::Overworld,
         };
         let path = location.file_path(dir);

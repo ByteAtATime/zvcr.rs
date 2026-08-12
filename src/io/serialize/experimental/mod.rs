@@ -87,8 +87,8 @@ mod tests {
     fn read_experimental_file() -> File {
         let dir = std::path::Path::new("test_files");
         let location = RegionLocation {
-            rx: -1,
-            rz: -1,
+            rx: 0,
+            rz: 0,
             dimension_type: DimensionType::Overworld,
         };
         let region_data = ReferenceReader::new(0)

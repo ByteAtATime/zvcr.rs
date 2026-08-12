@@ -139,8 +139,8 @@ mod tests {
     fn reconstruct_history_matches_snapshot_before() {
         let dir = std::path::Path::new("test_files");
         let location = RegionLocation {
-            rx: -1,
-            rz: -1,
+            rx: 0,
+            rz: 0,
             dimension_type: DimensionType::Overworld,
         };
         let file = read_file_at(dir, &location, 0).unwrap();
@@ -181,8 +181,8 @@ mod tests {
     fn encode_produces_byte_identical_output() {
         let dir = std::path::Path::new("test_files");
         let location = RegionLocation {
-            rx: -1,
-            rz: -1,
+            rx: 0,
+            rz: 0,
             dimension_type: DimensionType::Overworld,
         };
         let file = read_file_at(dir, &location, 0).unwrap();
@@ -201,8 +201,8 @@ mod tests {
     fn encode_is_exact_inverse_of_reconstruct() {
         let dir = std::path::Path::new("test_files");
         let location = RegionLocation {
-            rx: -1,
-            rz: -1,
+            rx: 0,
+            rz: 0,
             dimension_type: DimensionType::Overworld,
         };
         let file = read_file_at(dir, &location, 0).unwrap();
