@@ -1,5 +1,5 @@
-use super::transforms::palette::PaletteTable;
 use super::File;
+use super::transforms::palette::PaletteTable;
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
@@ -88,60 +88,41 @@ impl WriteHandle {
         }
     }
 
-    pub(crate) fn serialize_segment_state(&mut self, state: &SegmentState) {
-        put_u8(&mut self.data, state.state_type as u8);
-        put_u64_le(&mut self.data, state.timestamp as u64);
+    fn serialize_segment_state(data: &mut Vec<u8>, state: &SegmentState) {
+        put_u8(data, state.state_type as u8);
+        put_u64_le(data, state.timestamp as u64);
     }
 
-    pub(crate) fn serialize_segment_info(&mut self, info: &SegmentInfo) {
-        put_u64_le(&mut self.data, info.reverse_deltas.len() as u64);
+    fn serialize_segment_info(data: &mut Vec<u8>, info: &SegmentInfo) {
+        put_u64_le(data, info.reverse_deltas.len() as u64);
         for state in &info.reverse_deltas {
-            self.serialize_segment_state(state);
+            Self::serialize_segment_state(data, state);
         }
     }
 
-    pub(crate) fn serialize_tile_entities(&mut self, tile_entities: &DeltaTileEntityData) {
-        put_u64_le(&mut self.data, tile_entities.reverse_deltas.len() as u64);
+    fn serialize_tile_entities(data: &mut Vec<u8>, tile_entities: &DeltaTileEntityData) {
+        put_u64_le(data, tile_entities.reverse_deltas.len() as u64);
         for list_delta in &tile_entities.reverse_deltas {
-            put_u64_le(&mut self.data, list_delta.timestamp as u64);
-            put_u64_le(&mut self.data, list_delta.deltas.len() as u64);
+            put_u64_le(data, list_delta.timestamp as u64);
+            put_u64_le(data, list_delta.deltas.len() as u64);
 
             let mut sorted_entries: Vec<_> = list_delta.deltas.iter().collect();
             sorted_entries.sort_unstable_by_key(|(pos, _)| pos.packed());
             for (pos, delta) in sorted_entries {
-                put_u32_le(&mut self.data, pos.packed());
+                put_u32_le(data, pos.packed());
                 match delta {
                     TileEntityDelta::Erase => {
-                        put_u8(&mut self.data, 0);
+                        put_u8(data, 0);
                     }
                     TileEntityDelta::Put(te) => {
-                        put_u8(&mut self.data, 1);
-                        put_u32_le(&mut self.data, te.tile_type);
-                        put_u64_le(&mut self.data, te.nbt.len() as u64);
-                        put_bytes(&mut self.data, &te.nbt);
+                        put_u8(data, 1);
+                        put_u32_le(data, te.tile_type);
+                        put_u64_le(data, te.nbt.len() as u64);
+                        put_bytes(data, &te.nbt);
                     }
                 }
             }
         }
-    }
-
-    pub(crate) fn serialize_segment(&mut self, segment: &Segment) {
-        for section in segment.block_sections.active() {
-            Self::serialize_packed_delta_data(
-                &mut self.data,
-                section,
-                &mut self.block_palette_table,
-            );
-        }
-        for section in segment.biome_sections.active() {
-            Self::serialize_packed_delta_data(
-                &mut self.data,
-                section,
-                &mut self.biome_palette_table,
-            );
-        }
-        self.serialize_segment_info(&segment.info);
-        self.serialize_tile_entities(&segment.tile_entities);
     }
 
     pub(crate) fn serialize_region(&mut self, region: &Region) -> Result<(), String> {
@@ -161,16 +142,55 @@ impl WriteHandle {
         inner_handle.block_palette_table.finalize();
         inner_handle.biome_palette_table.finalize();
 
+        let present_count = region.segments.iter().flatten().count();
+        let sections = self.ctx.section_count;
+        let mut block_data = Vec::with_capacity(present_count * sections * 512);
+        let mut biome_data = Vec::with_capacity(present_count * sections * 128);
+        let mut info_data = Vec::with_capacity(present_count * 64);
+        let mut tile_entity_data = Vec::with_capacity(present_count * 256);
+
         for segment in region.segments.iter().flatten() {
-            inner_handle.serialize_segment(segment);
+            for section in segment.block_sections.active() {
+                Self::serialize_packed_delta_data(
+                    &mut block_data,
+                    section,
+                    &inner_handle.block_palette_table,
+                );
+            }
+        }
+        for segment in region.segments.iter().flatten() {
+            for section in segment.biome_sections.active() {
+                Self::serialize_packed_delta_data(
+                    &mut biome_data,
+                    section,
+                    &inner_handle.biome_palette_table,
+                );
+            }
+        }
+        for segment in region.segments.iter().flatten() {
+            Self::serialize_segment_info(&mut info_data, &segment.info);
+        }
+        for segment in region.segments.iter().flatten() {
+            Self::serialize_tile_entities(&mut tile_entity_data, &segment.tile_entities);
         }
 
         let mut palette_tables = Vec::new();
-        inner_handle.block_palette_table.serialize(&mut palette_tables);
-        inner_handle.biome_palette_table.serialize(&mut palette_tables);
+        inner_handle
+            .block_palette_table
+            .serialize(&mut palette_tables);
+        inner_handle
+            .biome_palette_table
+            .serialize(&mut palette_tables);
 
         let compressed = compress_zstd_parts(
-            &[&palette_tables, &inner_handle.data],
+            &[
+                &palette_tables,
+                &inner_handle.data,
+                &block_data,
+                &biome_data,
+                &info_data,
+                &tile_entity_data,
+            ],
             self.compression_level,
         )?;
         put_bytes(&mut self.data, &compressed);

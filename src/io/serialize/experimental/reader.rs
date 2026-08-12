@@ -1,5 +1,5 @@
-use super::transforms::palette::{deserialize_palette_table, palette_at};
 use super::File;
+use super::transforms::palette::{deserialize_palette_table, palette_at};
 use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::buffer::PooledBytes;
@@ -250,36 +250,6 @@ impl ReadHandle {
         Ok(tile_entities)
     }
 
-    pub(crate) fn deserialize_segment(
-        &mut self,
-        block_tables: &[Palette],
-        biome_tables: &[Palette],
-    ) -> Result<Arc<Segment>, ReadError> {
-        let sc = self.ctx.section_count;
-        let mut segment = Segment::with_section_count(sc);
-
-        let (block_storage, block_ranges) =
-            self.read_section_group::<SECTION_SIZE_BLOCKS>(sc, block_tables)?;
-        for (slot, r) in segment.block_sections.sections[..sc]
-            .iter_mut()
-            .zip(block_ranges)
-        {
-            *slot = PackedDeltaData::from_shared(Arc::clone(&block_storage), r);
-        }
-        let (biome_storage, biome_ranges) =
-            self.read_section_group::<SECTION_SIZE_BIOMES>(sc, biome_tables)?;
-        for (slot, r) in segment.biome_sections.sections[..sc]
-            .iter_mut()
-            .zip(biome_ranges)
-        {
-            *slot = PackedDeltaData::from_shared(Arc::clone(&biome_storage), r);
-        }
-
-        segment.info = self.deserialize_segment_info()?;
-        segment.tile_entities = self.deserialize_tile_entities()?;
-        Ok(Arc::new(segment))
-    }
-
     pub(crate) fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
         let block_table = deserialize_palette_table(self)?;
         let biome_table = deserialize_palette_table(self)?;
@@ -288,10 +258,45 @@ impl ReadHandle {
         for v in present.iter_mut() {
             *v = self.read_u8()? != 0;
         }
+
+        let mut segments = Vec::new();
+        let mut indices = Vec::new();
         for (i, &is_present) in present.iter().enumerate() {
             if is_present {
-                region.segments[i] = Some(self.deserialize_segment(&block_table, &biome_table)?);
+                indices.push(i);
+                segments.push(Segment::with_section_count(self.ctx.section_count));
             }
+        }
+
+        for segment in segments.iter_mut() {
+            let (block_storage, block_ranges) = self
+                .read_section_group::<SECTION_SIZE_BLOCKS>(self.ctx.section_count, &block_table)?;
+            for (slot, r) in segment.block_sections.sections[..self.ctx.section_count]
+                .iter_mut()
+                .zip(block_ranges)
+            {
+                *slot = PackedDeltaData::from_shared(Arc::clone(&block_storage), r);
+            }
+        }
+        for segment in segments.iter_mut() {
+            let (biome_storage, biome_ranges) = self
+                .read_section_group::<SECTION_SIZE_BIOMES>(self.ctx.section_count, &biome_table)?;
+            for (slot, r) in segment.biome_sections.sections[..self.ctx.section_count]
+                .iter_mut()
+                .zip(biome_ranges)
+            {
+                *slot = PackedDeltaData::from_shared(Arc::clone(&biome_storage), r);
+            }
+        }
+        for segment in segments.iter_mut() {
+            segment.info = self.deserialize_segment_info()?;
+        }
+        for segment in segments.iter_mut() {
+            segment.tile_entities = self.deserialize_tile_entities()?;
+        }
+
+        for (i, segment) in indices.into_iter().zip(segments) {
+            region.segments[i] = Some(Arc::new(segment));
         }
         Ok(())
     }
