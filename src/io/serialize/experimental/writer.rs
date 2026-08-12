@@ -1,34 +1,21 @@
 use super::File;
-use super::coder::context::{ContextCodec, NeighborSource};
-use crate::definitions::*;
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
 use crate::io::serialize::primitives::*;
 use crate::region::delta::PackedDeltaData;
-use crate::region::packed_data::{Data, PackedSnapshot};
-use crate::region::palette::{DIRECT_PALETTE, Palette, bits_per_entry};
+use crate::region::packed_data::PackedSnapshot;
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use crate::version::*;
-use ahash::AHashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
-
-pub(crate) type PaletteTable = AHashMap<Palette, usize>;
-
-pub(crate) const BITPLANE_THRESHOLD: usize = 4;
 
 pub(crate) struct WriteHandle {
     pub(crate) compression_level: i32,
     pub(crate) ctx: Context,
     pub(crate) data: Vec<u8>,
-    block_palette_table: PaletteTable,
-    biome_palette_table: PaletteTable,
-    plane_scratch: Vec<u8>,
-    encode_scratch: Vec<u8>,
 }
 
 impl WriteHandle {
@@ -40,199 +27,35 @@ impl WriteHandle {
                 protocol_version,
             },
             data: Vec::with_capacity(32 * 1024 * 1024),
-            block_palette_table: AHashMap::new(),
-            biome_palette_table: AHashMap::new(),
-            plane_scratch: Vec::new(),
-            encode_scratch: Vec::new(),
         }
     }
 
-    pub(crate) fn serialize_palette_table(table: &PaletteTable, buf: &mut Vec<u8>) {
-        let mut ordered = vec![DIRECT_PALETTE.clone(); table.len()];
-        for (palette, &index) in table {
-            ordered[index] = palette.clone();
+    fn put_atoms<const N: usize>(&mut self, atoms: &[u16; N]) {
+        let byte_len = N * std::mem::size_of::<u16>();
+        self.data.reserve(byte_len);
+        #[cfg(target_endian = "little")]
+        self.data.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(atoms.as_ptr() as *const u8, byte_len)
+        });
+        #[cfg(not(target_endian = "little"))]
+        for &atom in atoms {
+            put_u16_le(&mut self.data, atom);
         }
-
-        let entries: Vec<Vec<u16>> = ordered
-            .iter()
-            .map(|p| p.palette.iter().copied().collect())
-            .collect();
-        let encoded = super::coder::palette::encode_palette_table(&entries);
-        put_u32_le(buf, encoded.len() as u32);
-        buf.extend_from_slice(&encoded);
     }
 
-    pub(crate) fn record_palette_index(&mut self, palette: &Palette, is_block: bool) {
-        let table = if is_block {
-            &mut self.block_palette_table
-        } else {
-            &mut self.biome_palette_table
-        };
-        if palette.direct() {
-            put_u32_le(&mut self.data, u32::MAX);
-            return;
-        }
-        let idx = if let Some(&existing) = table.get(palette) {
-            existing
-        } else {
-            let next_index = table.len();
-            table.insert(palette.clone(), next_index);
-            next_index
-        };
-        put_u32_le(&mut self.data, idx as u32);
-    }
-
-    pub(crate) fn serialize_snapshot_header<const UNPACKED_SIZE: usize>(
-        &mut self,
-        snapshot: &PackedSnapshot<UNPACKED_SIZE>,
-        is_block: bool,
-    ) {
+    pub(crate) fn serialize_snapshot<const N: usize>(&mut self, snapshot: &PackedSnapshot<N>) {
         put_u64_le(&mut self.data, snapshot.timestamp as u64);
-        match &snapshot.data.data {
-            Data::Single(val) => {
-                put_u8(&mut self.data, 0);
-                put_u16_le(&mut self.data, *val);
-            }
-            Data::Paletted(paletted) => {
-                put_u8(&mut self.data, 1);
-                self.record_palette_index(&paletted.palette, is_block);
-                if !paletted.palette.direct() {
-                    let bits = paletted.palette.bits_per_entry as u8;
-                    let remapped =
-                        super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
-                    put_u8(
-                        &mut self.data,
-                        super::bitplane::compute_plane_mask(&remapped, bits),
-                    );
-                }
-            }
-        }
+        let atoms = snapshot.data.unpack();
+        self.put_atoms(&atoms);
     }
 
-    pub(crate) fn serialize_snapshot_body<const UNPACKED_SIZE: usize>(
+    pub(crate) fn serialize_packed_delta_data<const N: usize>(
         &mut self,
-        snapshot: &PackedSnapshot<UNPACKED_SIZE>,
+        delta_data: &PackedDeltaData<N>,
     ) {
-        let Data::Paletted(paletted) = &snapshot.data.data else {
-            return;
-        };
-        if paletted.palette.direct() {
-            put_u64_le_slice(&mut self.data, &paletted.packed_long_array);
-            return;
-        }
-        let bits = paletted.palette.bits_per_entry as u8;
-        let remapped = super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
-        let mask = super::bitplane::compute_plane_mask(&remapped, bits);
-        let plane_bytes = UNPACKED_SIZE / 8;
-        let byte_len = mask.count_ones() as usize * plane_bytes;
-
-        self.plane_scratch.clear();
-        self.plane_scratch.resize(byte_len, 0);
-        super::bitplane::pack_bitplanes_into::<UNPACKED_SIZE>(
-            &remapped,
-            bits,
-            mask,
-            &mut self.plane_scratch[..byte_len],
-        );
-
-        self.encode_scratch.clear();
-        super::rle::encode(&self.plane_scratch[..byte_len], &mut self.encode_scratch);
-        put_u16_le(&mut self.data, self.encode_scratch.len() as u16);
-        put_bytes(&mut self.data, &self.encode_scratch);
-    }
-
-    pub(crate) fn serialize_block_header_j0(
-        &mut self,
-        snapshot: &PackedSnapshot<SECTION_SIZE_BLOCKS>,
-        _blocks: &[u16; SECTION_SIZE_BLOCKS],
-        unique: &[u16],
-        counts: &mut [u32],
-    ) {
-        put_u64_le(&mut self.data, snapshot.timestamp as u64);
-
-        if unique.len() <= 1 {
-            put_u8(&mut self.data, 0);
-            put_u16_le(&mut self.data, unique.first().copied().unwrap_or(0));
-        } else if unique.len() <= BITPLANE_THRESHOLD {
-            put_u8(&mut self.data, 1);
-            let Data::Paletted(paletted) = &snapshot.data.data else {
-                unreachable!()
-            };
-            self.record_palette_index(&paletted.palette, true);
-            if !paletted.palette.direct() {
-                let bits = paletted.palette.bits_per_entry as u8;
-                let remapped =
-                    super::bitplane::remap_to_popcount(&paletted.packed_long_array, bits);
-                put_u8(
-                    &mut self.data,
-                    super::bitplane::compute_plane_mask(&remapped, bits),
-                );
-            }
-        } else {
-            put_u8(&mut self.data, 11);
-            let palette = Palette {
-                palette: unique.into(),
-                bits_per_entry: bits_per_entry(unique.len()),
-            };
-            self.record_palette_index(&palette, true);
-        }
-
-        for &atom in unique.iter() {
-            counts[atom as usize] = 0;
-        }
-    }
-
-    pub(crate) fn serialize_block_body_j0(
-        &mut self,
-        snapshot: &PackedSnapshot<SECTION_SIZE_BLOCKS>,
-        blocks: &[u16; SECTION_SIZE_BLOCKS],
-        unique: &[u16],
-        codec: &mut ContextCodec,
-        counts: &mut [u32],
-        val_to_local: &mut [u16],
-        src: &NeighborSource,
-    ) {
-        if unique.len() <= 1 {
-            for &atom in unique.iter() {
-                counts[atom as usize] = 0;
-            }
-            return;
-        }
-
-        if unique.len() <= BITPLANE_THRESHOLD {
-            self.serialize_snapshot_body(snapshot);
-            for &atom in unique.iter() {
-                counts[atom as usize] = 0;
-            }
-            return;
-        }
-
-        for (local, &atom) in unique.iter().enumerate() {
-            val_to_local[atom as usize] = local as u16;
-        }
-
-        let encoded = codec.encode_section(blocks, val_to_local, src);
-        put_u32_le(&mut self.data, encoded.len() as u32);
-        put_bytes(&mut self.data, &encoded);
-
-        for &atom in unique.iter() {
-            counts[atom as usize] = 0;
-            val_to_local[atom as usize] = 0;
-        }
-    }
-
-    pub(crate) fn serialize_column_headers<const UNPACKED_SIZE: usize>(
-        &mut self,
-        sections: &[&PackedDeltaData<UNPACKED_SIZE>],
-        is_block: bool,
-    ) {
-        for section in sections {
-            put_u64_le(&mut self.data, section.reverse_deltas.len() as u64);
-        }
-        for section in sections {
-            for snapshot in &section.reverse_deltas {
-                self.serialize_snapshot_header(snapshot, is_block);
-            }
+        put_u64_le(&mut self.data, delta_data.reverse_deltas.len() as u64);
+        for snapshot in &delta_data.reverse_deltas {
+            self.serialize_snapshot(snapshot);
         }
     }
 
@@ -273,15 +96,20 @@ impl WriteHandle {
         }
     }
 
+    pub(crate) fn serialize_segment(&mut self, segment: &Segment) {
+        for section in segment.block_sections.active() {
+            self.serialize_packed_delta_data(section);
+        }
+        for section in segment.biome_sections.active() {
+            self.serialize_packed_delta_data(section);
+        }
+        self.serialize_segment_info(&segment.info);
+        self.serialize_tile_entities(&segment.tile_entities);
+    }
+
     pub(crate) fn serialize_region(&mut self, region: &Region) -> Result<(), String> {
         let mut inner_handle = WriteHandle::new(self.ctx.protocol_version, self.compression_level);
         inner_handle.ctx = self.ctx.clone();
-        let section_count = inner_handle.ctx.section_count;
-
-        let present: Vec<&Arc<Segment>> = region.segments.iter().flatten().collect();
-        let present_indices: Vec<usize> = (0..SEGMENTS_PER_REGION)
-            .filter(|&i| region.segments[i].is_some())
-            .collect();
 
         for segment in &region.segments {
             put_u8(
@@ -290,135 +118,11 @@ impl WriteHandle {
             );
         }
 
-        let block_columns: Vec<Vec<_>> = (0..section_count)
-            .map(|y| {
-                present
-                    .iter()
-                    .map(|segment| &segment.block_sections.sections[y])
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        let biome_columns: Vec<Vec<_>> = (0..section_count)
-            .map(|y| {
-                present
-                    .iter()
-                    .map(|segment| &segment.biome_sections.sections[y])
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        let mut counts = vec![0u32; 65536];
-        let mut unique = Vec::new();
-        let j0_count = block_columns
-            .iter()
-            .flatten()
-            .filter(|section| !section.reverse_deltas.is_empty())
-            .count();
-        let mut j0_cache: Vec<([u16; SECTION_SIZE_BLOCKS], Vec<u16>)> =
-            Vec::with_capacity(j0_count);
-        let mut j0_pos = vec![-1i32; section_count * SEGMENTS_PER_REGION];
-
-        for y in 0..section_count {
-            for section in &block_columns[y] {
-                put_u64_le(&mut inner_handle.data, section.reverse_deltas.len() as u64);
-            }
-            for (k, section) in block_columns[y].iter().enumerate() {
-                for (j, snapshot) in section.reverse_deltas.iter().enumerate() {
-                    if j == 0 {
-                        let blocks = snapshot.data.unpack();
-                        unique.clear();
-                        for &atom in blocks.iter() {
-                            if counts[atom as usize] == 0 {
-                                unique.push(atom);
-                            }
-                            counts[atom as usize] += 1;
-                        }
-                        unique.sort_unstable_by(|&a, &b| {
-                            counts[b as usize].cmp(&counts[a as usize]).then(a.cmp(&b))
-                        });
-                        inner_handle.serialize_block_header_j0(
-                            snapshot,
-                            &blocks,
-                            &unique,
-                            &mut counts,
-                        );
-                        j0_cache.push((blocks, std::mem::take(&mut unique)));
-                        j0_pos[y * SEGMENTS_PER_REGION + present_indices[k]] =
-                            j0_cache.len() as i32 - 1;
-                    } else {
-                        inner_handle.serialize_snapshot_header(snapshot, true);
-                    }
-                }
-            }
+        for segment in region.segments.iter().flatten() {
+            inner_handle.serialize_segment(segment);
         }
 
-        for column in &biome_columns {
-            inner_handle.serialize_column_headers(column, false);
-        }
-
-        let mut codec = ContextCodec::new_encoder(section_count);
-        codec.reset(section_count);
-        let mut val_to_local = vec![0u16; 65536];
-
-        let mut j0_idx = 0;
-        for y in 0..section_count {
-            for (k, section) in block_columns[y].iter().enumerate() {
-                if let Some(snapshot) = section.reverse_deltas.first() {
-                    let seg_idx = present_indices[k];
-                    let cx = seg_idx / 32;
-                    let cz = seg_idx % 32;
-                    let (blocks, unique) = &j0_cache[j0_idx];
-                    j0_idx += 1;
-                    let src = NeighborSource::new(&j0_cache, &j0_pos, section_count, cx, cz, y);
-                    inner_handle.serialize_block_body_j0(
-                        snapshot,
-                        blocks,
-                        unique,
-                        &mut codec,
-                        &mut counts,
-                        &mut val_to_local,
-                        &src,
-                    );
-                }
-            }
-        }
-
-        for y in 0..section_count {
-            for section in &block_columns[y] {
-                for snapshot in section.reverse_deltas.iter().skip(1) {
-                    inner_handle.serialize_snapshot_body(snapshot);
-                }
-            }
-        }
-
-        for column in &biome_columns {
-            for section in column {
-                if let Some(snapshot) = section.reverse_deltas.first() {
-                    inner_handle.serialize_snapshot_body(snapshot);
-                }
-            }
-            for section in column {
-                for snapshot in section.reverse_deltas.iter().skip(1) {
-                    inner_handle.serialize_snapshot_body(snapshot);
-                }
-            }
-        }
-
-        for segment in &present {
-            inner_handle.serialize_segment_info(&segment.info);
-        }
-        for segment in &present {
-            inner_handle.serialize_tile_entities(&segment.tile_entities);
-        }
-
-        let mut palette_tables = Vec::new();
-        Self::serialize_palette_table(&inner_handle.block_palette_table, &mut palette_tables);
-        Self::serialize_palette_table(&inner_handle.biome_palette_table, &mut palette_tables);
-
-        let compressed = compress_zstd_parts(
-            &[&palette_tables, &inner_handle.data],
-            self.compression_level,
-        )?;
+        let compressed = compress_zstd_parts(&[&inner_handle.data], self.compression_level)?;
         put_bytes(&mut self.data, &compressed);
         Ok(())
     }

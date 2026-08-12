@@ -1,106 +1,17 @@
-pub(crate) mod bitplane;
-pub(crate) mod coder;
 pub(crate) mod file;
 pub(crate) mod reader;
-pub(crate) mod rans;
-pub(crate) mod rle;
 pub(crate) mod writer;
 
 pub(crate) use file::File;
 
 use crate::io::serialize::types::{Reader, Writer};
 use crate::raw::RegionData;
-use crate::region::delta::PackedDeltaData;
-use crate::region::packed_data::{Data, PackedData, PackedSnapshot};
-use crate::region::palette::{PackScratch, ATOM_COUNT};
 use crate::region::segment::Region;
 use std::sync::Arc;
 
 use self::reader::ReadHandle;
-use self::writer::{serialize_file_to_vec, BITPLANE_THRESHOLD};
+use self::writer::serialize_file_to_vec;
 use super::codec::{encode_segment, reconstruct_segment};
-
-fn re_pack_delta<const N: usize>(data: &PackedDeltaData<N>) -> PackedDeltaData<N> {
-    let mut scratch = PackScratch::new();
-    let mut out = PackedDeltaData {
-        reverse_deltas: Vec::with_capacity(data.reverse_deltas.len()),
-    };
-    for snap in &data.reverse_deltas {
-        let unpacked = snap.data.unpack();
-        out.reverse_deltas.push(PackedSnapshot {
-            data: PackedData::pack_with(&unpacked, &mut scratch),
-            timestamp: snap.timestamp,
-        });
-    }
-    out
-}
-
-struct SeenScratch {
-    seen: Vec<u8>,
-    generation: u8,
-}
-
-impl SeenScratch {
-    fn new() -> Self {
-        Self {
-            seen: vec![0; ATOM_COUNT],
-            generation: 0,
-        }
-    }
-}
-
-fn should_skip_repack<const N: usize>(
-    data: &PackedData<N>,
-    threshold: usize,
-    scratch: &mut SeenScratch,
-) -> bool {
-    if matches!(&data.data, Data::Single(_)) {
-        return true;
-    }
-    scratch.generation = scratch.generation.wrapping_add(1);
-    if scratch.generation == 0 {
-        scratch.seen.fill(0);
-        scratch.generation = 1;
-    }
-    let unpacked = data.unpack();
-    let mut unique = 0usize;
-    for &atom in unpacked.iter() {
-        if scratch.seen[atom as usize] != scratch.generation {
-            scratch.seen[atom as usize] = scratch.generation;
-            unique += 1;
-            if unique > threshold {
-                return true;
-            }
-        }
-    }
-    unique <= 1
-}
-
-fn re_pack_block_delta<const N: usize>(
-    mut data: PackedDeltaData<N>,
-    threshold: usize,
-    scratch: &mut SeenScratch,
-) -> PackedDeltaData<N> {
-    let mut pack_scratch: Option<PackScratch> = None;
-    let mut out = PackedDeltaData {
-        reverse_deltas: Vec::with_capacity(data.reverse_deltas.len()),
-    };
-    for (i, snap) in data.reverse_deltas.drain(..).enumerate() {
-        if i == 0 && should_skip_repack(&snap.data, threshold, scratch) {
-            out.reverse_deltas.push(snap);
-        } else {
-            let unpacked = snap.data.unpack();
-            out.reverse_deltas.push(PackedSnapshot {
-                data: PackedData::pack_with(
-                    &unpacked,
-                    pack_scratch.get_or_insert_with(PackScratch::new),
-                ),
-                timestamp: snap.timestamp,
-            });
-        }
-    }
-    out
-}
 
 pub(crate) fn reconstruct_region(file: &File) -> RegionData {
     RegionData {
@@ -117,19 +28,8 @@ pub(crate) fn reconstruct_region(file: &File) -> RegionData {
 
 pub(crate) fn encode_region(rd: &RegionData) -> File {
     let mut region = Region::new(rd.protocol_version);
-    let mut scratch = SeenScratch::new();
     for (i, slot) in rd.segments.iter().enumerate() {
-        region.segments[i] = slot.as_ref().map(|sd| {
-            let mut segment = encode_segment(sd);
-            for section in segment.block_sections.active_mut() {
-                *section =
-                    re_pack_block_delta(std::mem::take(section), BITPLANE_THRESHOLD, &mut scratch);
-            }
-            for section in segment.biome_sections.active_mut() {
-                *section = re_pack_delta(section);
-            }
-            Arc::new(segment)
-        });
+        region.segments[i] = slot.as_ref().map(|sd| Arc::new(encode_segment(sd)));
     }
     File {
         version: rd.version,

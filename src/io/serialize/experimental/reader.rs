@@ -1,15 +1,13 @@
-use crate::definitions::*;
+use crate::definitions::SEGMENTS_PER_REGION;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
-use super::coder::context::{read_varint, ContextCodec};
 use super::File;
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::io::serialize::primitives::ByteCursor;
 use crate::region::delta::PackedDeltaData;
-use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
-use crate::region::palette::{DIRECT_PALETTE, Palette, PackScratch, bits_per_entry};
+use crate::region::packed_data::{Data, PackedData, PackedSnapshot};
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
@@ -19,25 +17,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::ops::{Deref, DerefMut};
 
-#[derive(Clone, Copy)]
-pub(crate) struct BodyPlanEntry {
-    k: usize,
-    j: usize,
-    byte_len: usize,
-    mask: u8,
-    direct: bool,
-    active: bool,
-    is_context_coded: bool,
-}
-
 pub(crate) struct ReadHandle {
     pub(crate) ctx: Context,
     cursor: ByteCursor,
     max_deltas: usize,
-    version: Version,
-    plane_scratch: Vec<u8>,
-    encoded_scratch: Vec<u8>,
-    pack_scratch: PackScratch,
 }
 
 impl Deref for ReadHandle {
@@ -59,16 +42,7 @@ impl ReadHandle {
             ctx: Context::default(),
             cursor: ByteCursor::new(data),
             max_deltas,
-            version: ZVCR3D_LATEST_VERSION,
-            plane_scratch: Vec::new(),
-            encoded_scratch: Vec::new(),
-            pack_scratch: PackScratch::new(),
         }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn offset(&self) -> usize {
-        self.pos
     }
 
     pub(crate) fn validate_file_prefix(&mut self, prefix: &str) -> Result<(), ReadError> {
@@ -96,291 +70,70 @@ impl ReadHandle {
         Ok(dim)
     }
 
-    pub(crate) fn deserialize_palette_table(&mut self, table: &mut Vec<Palette>) -> Result<(), ReadError> {
-        let blob_len = self.read_u32()? as usize;
-        let mut blob = vec![0u8; blob_len];
-        self.read_exact(&mut blob)?;
-        let entries = super::coder::palette::decode_palette_table(&blob)
-            .map_err(|e| ReadError::Generic(format!("Palette decode: {e}")))?;
-        table.reserve(entries.len());
-        for atoms in entries {
-            let palette_len = atoms.len();
-            let bpe = bits_per_entry(palette_len);
-            table.push(Palette {
-                palette: atoms.into(),
-                bits_per_entry: bpe,
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn deserialize_column_headers<const UNPACKED_SIZE: usize>(
-        &mut self,
-        column_length: usize,
-        palette_table: &[Palette],
-    ) -> Result<(
-        Vec<PackedDeltaData<UNPACKED_SIZE>>,
-        Vec<BodyPlanEntry>,
-    ), ReadError> {
-        let mut counts = Vec::with_capacity(column_length);
-        for _ in 0..column_length {
-            let delta_length = self.read_u64()?;
-            if delta_length > MAX_DELTA_LENGTH {
-                return Err(ReadError::LengthExceeded(
-                    "Delta length too high".to_string(),
-                ));
-            }
-            counts.push(delta_length as usize);
-        }
-
-        let default_snapshot = PackedSnapshot {
-            data: PackedData {
-                data: Data::Single(0),
-            },
-            timestamp: 0,
-        };
-
-        let mut sections: Vec<PackedDeltaData<UNPACKED_SIZE>> = counts
-            .iter()
-            .map(|&count| PackedDeltaData {
-                reverse_deltas: vec![default_snapshot.clone(); count],
-            })
-            .collect();
-
-        let mut body_plan: Vec<BodyPlanEntry> = Vec::new();
-
-        for (section_index, &count) in counts.iter().enumerate() {
-            for delta_index in 0..count {
-                let active = self.max_deltas == 0 || delta_index < self.max_deltas;
-                let timestamp = self.read_u64()? as i64;
-                let data_type = self.read_u8()?;
-
-                if data_type == 0 {
-                    let single_val = self.read_u16()?;
-                    if active {
-                        sections[section_index].reverse_deltas[delta_index] = PackedSnapshot {
-                            data: PackedData {
-                                data: Data::Single(single_val),
-                            },
-                            timestamp,
-                        };
-                    }
-                    continue;
-                }
-
-                if data_type == 11 {
-                    let palette_index = self.read_u32()?;
-                    let palette = if palette_index == u32::MAX {
-                        DIRECT_PALETTE.clone()
-                    } else {
-                        if palette_index as usize >= palette_table.len() {
-                            return Err(ReadError::InvalidPaletteIndex {
-                                index: palette_index,
-                                max: palette_table.len(),
-                            });
-                        }
-                        palette_table[palette_index as usize].clone()
-                    };
-                    if active {
-                        sections[section_index].reverse_deltas[delta_index] = PackedSnapshot {
-                            data: PackedData {
-                                data: Data::Paletted(PalettedData {
-                                    packed_long_array: Vec::new(),
-                                    palette,
-                                }),
-                            },
-                            timestamp,
-                        };
-                    }
-                    body_plan.push(BodyPlanEntry {
-                        k: section_index,
-                        j: delta_index,
-                        byte_len: 0,
-                        mask: 0,
-                        direct: false,
-                        active,
-                        is_context_coded: true,
-                    });
-                    continue;
-                }
-
-                let palette_index = self.read_u32()?;
-                let bits_per_entry = if palette_index == u32::MAX {
-                    16
-                } else {
-                    if palette_index as usize >= palette_table.len() {
-                        return Err(ReadError::InvalidPaletteIndex {
-                            index: palette_index,
-                            max: palette_table.len(),
-                        });
-                    }
-                    palette_table[palette_index as usize].bits_per_entry
-                };
-                let packed_len = UNPACKED_SIZE.div_ceil(64 / bits_per_entry);
-                let direct = palette_index == u32::MAX;
-                let plane_bytes = UNPACKED_SIZE / 8;
-                let (byte_len, mask) = if direct {
-                    (packed_len * std::mem::size_of::<u64>(), 0u8)
-                } else {
-                    let mask = self.read_u8()?;
-                    (mask.count_ones() as usize * plane_bytes, mask)
-                };
-
-                if active {
-                    let palette = if palette_index == u32::MAX {
-                        DIRECT_PALETTE.clone()
-                    } else {
-                        palette_table[palette_index as usize].clone()
-                    };
-                    sections[section_index].reverse_deltas[delta_index] = PackedSnapshot {
-                        data: PackedData {
-                            data: Data::Paletted(PalettedData {
-                                packed_long_array: Vec::with_capacity(packed_len),
-                                palette,
-                            }),
-                        },
-                        timestamp,
-                    };
-                    body_plan.push(BodyPlanEntry {
-                        k: section_index,
-                        j: delta_index,
-                        byte_len,
-                        mask,
-                        direct,
-                        active: true,
-                        is_context_coded: false,
-                    });
-                } else {
-                    body_plan.push(BodyPlanEntry {
-                        k: section_index,
-                        j: delta_index,
-                        byte_len,
-                        mask,
-                        direct,
-                        active: false,
-                        is_context_coded: false,
-                    });
-                }
-            }
-        }
-
-        Ok((sections, body_plan))
-    }
-
-    pub(crate) fn read_snapshot_body_into<const UNPACKED_SIZE: usize>(
-        &mut self,
-        byte_len: usize,
-        mask: u8,
-        direct: bool,
-        active: bool,
-        snapshot: &mut PackedSnapshot<UNPACKED_SIZE>,
-    ) -> Result<(), ReadError> {
-        let rle = self.version >= Version::Zvcr3d1001;
-
+    fn read_atoms<const N: usize>(&mut self, active: bool) -> Result<[u16; N], ReadError> {
+        let mut atoms = [0u16; N];
         if !active {
-            if rle && !direct {
-                let encoded_len = self.cursor.read_u16()? as usize;
-                self.pos += encoded_len;
-            } else {
-                self.pos += byte_len;
-            }
-            return Ok(());
+            self.pos += N * std::mem::size_of::<u16>();
+            return Ok(atoms);
         }
-
-        let Data::Paletted(paletted) = &mut snapshot.data.data else {
-            return Ok(());
-        };
-
-        let bits = paletted.palette.bits_per_entry;
-        let packed_len = UNPACKED_SIZE.div_ceil(64 / bits);
-
-        if paletted.palette.direct() {
-            let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
-            {
-                let byte_slice = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        packed_longs.as_mut_ptr() as *mut u8,
-                        byte_len,
-                    )
-                };
-                self.read_exact(byte_slice)?;
-            }
-            #[cfg(not(target_endian = "little"))]
-            {
-                for v in packed_longs.iter_mut() {
-                    *v = v.to_le();
-                }
-            }
-            paletted.packed_long_array = packed_longs;
-            return Ok(());
+        let byte_len = N * std::mem::size_of::<u16>();
+        {
+            let byte_slice = unsafe {
+                std::slice::from_raw_parts_mut(atoms.as_mut_ptr() as *mut u8, byte_len)
+            };
+            self.read_exact(byte_slice)?;
         }
-
-        if self.plane_scratch.len() < byte_len {
-            self.plane_scratch.resize(byte_len, 0);
+        #[cfg(not(target_endian = "little"))]
+        for atom in atoms.iter_mut() {
+            *atom = u16::from_le(*atom);
         }
-        let scratch = &mut self.plane_scratch[..byte_len];
+        Ok(atoms)
+    }
 
-        if rle {
-            let encoded_len = self.cursor.read_u16()? as usize;
-            if self.encoded_scratch.len() < encoded_len {
-                self.encoded_scratch.resize(encoded_len, 0);
-            }
-            self.cursor.read_exact(&mut self.encoded_scratch[..encoded_len])?;
-            super::rle::decode(&self.encoded_scratch[..encoded_len], scratch)?;
+    pub(crate) fn deserialize_snapshot<const N: usize>(
+        &mut self,
+        active: bool,
+    ) -> Result<PackedSnapshot<N>, ReadError> {
+        let timestamp = self.read_u64()? as i64;
+        let atoms = self.read_atoms::<N>(active)?;
+        let data = if active {
+            PackedData::pack(&atoms)
         } else {
-            self.cursor.read_exact(scratch)?;
-        }
-
-        let mut packed_longs = vec![0u64; packed_len];
-        super::bitplane::unpack_bitplanes_into::<UNPACKED_SIZE>(
-            scratch,
-            bits as u8,
-            mask,
-            &mut packed_longs,
-        );
-        super::bitplane::remap_from_popcount(&mut packed_longs, bits as u8);
-        paletted.packed_long_array = packed_longs;
-        Ok(())
+            PackedData {
+                data: Data::Single(0),
+            }
+        };
+        Ok(PackedSnapshot { data, timestamp })
     }
 
-    pub(crate) fn read_context_body(
+    pub(crate) fn deserialize_packed_delta_data<const N: usize>(
         &mut self,
-        snapshot: &mut PackedSnapshot<SECTION_SIZE_BLOCKS>,
-        codec: &mut ContextCodec,
-        cx: usize,
-        cz: usize,
-        sec_idx: usize,
-        active: bool,
+        deltas: &mut PackedDeltaData<N>,
     ) -> Result<(), ReadError> {
-        let body_len = self.read_u32()? as usize;
-
-        if !active {
-            self.pos += body_len;
-            return Ok(());
+        let delta_length = self.read_u64()?;
+        if delta_length > MAX_DELTA_LENGTH {
+            return Err(ReadError::LengthExceeded(
+                "Delta length too high".to_string(),
+            ));
         }
 
-        let mut body = vec![0u8; body_len];
-        self.read_exact(&mut body)?;
+        deltas.reverse_deltas.resize(
+            delta_length as usize,
+            PackedSnapshot {
+                data: PackedData {
+                    data: Data::Single(0),
+                },
+                timestamp: 0,
+            },
+        );
 
-        let (num_runs, mut pos) = read_varint(&body, 0).map_err(ReadError::Generic)?;
-        let mut runs = Vec::with_capacity(num_runs as usize);
-        for _ in 0..num_runs {
-            let (start, p) = read_varint(&body, pos).map_err(ReadError::Generic)?;
-            let (len, p) = read_varint(&body, p).map_err(ReadError::Generic)?;
-            runs.push((start as u16, len as u16));
-            pos = p;
+        for delta_index in 0..delta_length as usize {
+            let active = self.max_deltas == 0 || delta_index < self.max_deltas;
+            let snapshot = self.deserialize_snapshot::<N>(active)?;
+            if active {
+                deltas.reverse_deltas[delta_index] = snapshot;
+            }
         }
-
-        let palette_atoms: Vec<u16> = match &snapshot.data.data {
-            Data::Paletted(paletted) => paletted.palette.palette.iter().copied().collect(),
-            _ => return Ok(()),
-        };
-
-        let blocks = codec
-            .decode_section(&body[pos..], &runs, &palette_atoms, cx, cz, sec_idx)
-            .map_err(ReadError::Generic)?;
-
-        snapshot.data = PackedData::pack_with(&blocks, &mut self.pack_scratch);
         Ok(())
     }
 
@@ -471,168 +224,30 @@ impl ReadHandle {
         Ok(tile_entities)
     }
 
-    pub(crate) fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
-        let mut block_table = Vec::new();
-        let mut biome_table = Vec::new();
-        self.deserialize_palette_table(&mut block_table)?;
-        self.deserialize_palette_table(&mut biome_table)?;
+    pub(crate) fn deserialize_segment(&mut self) -> Result<Arc<Segment>, ReadError> {
+        let mut segment = Segment::with_section_count(self.ctx.section_count);
 
+        for section in segment.block_sections.active_mut() {
+            self.deserialize_packed_delta_data(section)?;
+        }
+        for section in segment.biome_sections.active_mut() {
+            self.deserialize_packed_delta_data(section)?;
+        }
+
+        segment.info = self.deserialize_segment_info()?;
+        segment.tile_entities = self.deserialize_tile_entities()?;
+        Ok(Arc::new(segment))
+    }
+
+    pub(crate) fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
         let mut present = vec![false; SEGMENTS_PER_REGION];
         for v in present.iter_mut() {
             *v = self.read_u8()? != 0;
         }
-
-        let present_indices: Vec<usize> = (0..SEGMENTS_PER_REGION).filter(|&i| present[i]).collect();
-        let present_count = present_indices.len();
-        let section_count = self.ctx.section_count;
-
-        let mut segments: Vec<Option<Segment>> = (0..SEGMENTS_PER_REGION).map(|_| None).collect();
-        for &i in &present_indices {
-            segments[i] = Some(Segment::with_section_count(section_count));
-        }
-
-        let mut block_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>>> =
-            Vec::with_capacity(section_count);
-        let mut block_body_plans: Vec<Vec<BodyPlanEntry>> =
-            Vec::with_capacity(section_count);
-        for _ in 0..section_count {
-            let (column, plan) =
-                self.deserialize_column_headers::<SECTION_SIZE_BLOCKS>(present_count, &block_table)?;
-            block_columns.push(column);
-            block_body_plans.push(plan);
-        }
-
-        let mut biome_columns: Vec<Vec<PackedDeltaData<SECTION_SIZE_BIOMES>>> =
-            Vec::with_capacity(section_count);
-        let mut biome_body_plans: Vec<Vec<BodyPlanEntry>> =
-            Vec::with_capacity(section_count);
-        for _ in 0..section_count {
-            let (column, plan) =
-                self.deserialize_column_headers::<SECTION_SIZE_BIOMES>(present_count, &biome_table)?;
-            biome_columns.push(column);
-            biome_body_plans.push(plan);
-        }
-
-        for y in 0..section_count {
-            for k in 0..present_count {
-                let i = present_indices[k];
-                let seg = segments[i].as_mut().unwrap();
-                seg.block_sections.sections[y] = std::mem::take(&mut block_columns[y][k]);
+        for (i, &is_present) in present.iter().enumerate() {
+            if is_present {
+                region.segments[i] = Some(self.deserialize_segment()?);
             }
-        }
-        for y in 0..section_count {
-            for k in 0..present_count {
-                let i = present_indices[k];
-                let seg = segments[i].as_mut().unwrap();
-                seg.biome_sections.sections[y] = std::mem::take(&mut biome_columns[y][k]);
-            }
-        }
-
-        let mut codec = ContextCodec::new(section_count);
-        codec.reset(section_count);
-
-        for y in 0..section_count {
-            let mut bp_iter = block_body_plans[y]
-                .iter()
-                .filter(|e| e.j == 0)
-                .peekable();
-            for k in 0..present_count {
-                let i = present_indices[k];
-                let cx = i / 32;
-                let cz = i % 32;
-                let seg = segments[i].as_mut().unwrap();
-
-                if bp_iter.peek().map_or(false, |e| e.k == k) {
-                    let entry = *bp_iter.next().unwrap();
-                    let snapshot =
-                        &mut seg.block_sections.sections[y].reverse_deltas[entry.j];
-                    if entry.is_context_coded {
-                        self.read_context_body(
-                            snapshot,
-                            &mut codec,
-                            cx,
-                            cz,
-                            y,
-                            entry.active,
-                        )?;
-                    } else {
-                        self.read_snapshot_body_into(
-                            entry.byte_len,
-                            entry.mask,
-                            entry.direct,
-                            entry.active,
-                            snapshot,
-                        )?;
-                        if entry.active {
-                            let blocks = snapshot.data.unpack();
-                            codec.write_recon(&blocks, cx, cz, y);
-                        }
-                    }
-                } else {
-                    if seg.block_sections.sections[y].reverse_deltas.is_empty() {
-                        continue;
-                    }
-                    let snapshot = &seg.block_sections.sections[y].reverse_deltas[0];
-                    let blocks = snapshot.data.unpack();
-                    codec.write_recon(&blocks, cx, cz, y);
-                }
-            }
-        }
-
-        for y in 0..section_count {
-            let plan = &block_body_plans[y];
-            for entry in plan.iter().filter(|e| e.j != 0) {
-                let i = present_indices[entry.k];
-                let seg = segments[i].as_mut().unwrap();
-                let snapshot = &mut seg.block_sections.sections[y].reverse_deltas[entry.j];
-                self.read_snapshot_body_into(
-                    entry.byte_len,
-                    entry.mask,
-                    entry.direct,
-                    entry.active,
-                    snapshot,
-                )?;
-            }
-        }
-        for y in 0..section_count {
-            let plan = &biome_body_plans[y];
-            for entry in plan.iter().filter(|e| e.j == 0) {
-                let i = present_indices[entry.k];
-                let seg = segments[i].as_mut().unwrap();
-                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[entry.j];
-                self.read_snapshot_body_into(
-                    entry.byte_len,
-                    entry.mask,
-                    entry.direct,
-                    entry.active,
-                    snapshot,
-                )?;
-            }
-            for entry in plan.iter().filter(|e| e.j != 0) {
-                let i = present_indices[entry.k];
-                let seg = segments[i].as_mut().unwrap();
-                let snapshot = &mut seg.biome_sections.sections[y].reverse_deltas[entry.j];
-                self.read_snapshot_body_into(
-                    entry.byte_len,
-                    entry.mask,
-                    entry.direct,
-                    entry.active,
-                    snapshot,
-                )?;
-            }
-        }
-
-        for &i in &present_indices {
-            let seg = segments[i].as_mut().unwrap();
-            seg.info = self.deserialize_segment_info()?;
-        }
-        for &i in &present_indices {
-            let seg = segments[i].as_mut().unwrap();
-            seg.tile_entities = self.deserialize_tile_entities()?;
-        }
-
-        for i in 0..SEGMENTS_PER_REGION {
-            region.segments[i] = segments[i].take().map(Arc::new);
         }
         Ok(())
     }
@@ -650,7 +265,6 @@ impl ReadHandle {
 
         let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
         region_handle.ctx = self.ctx.clone();
-        region_handle.version = version;
 
         let mut file = File {
             version,
