@@ -24,3 +24,18 @@ pub(super) fn format_duration(dur: Duration) -> String {
         format!("{:.2}s", dur.as_secs_f64())
     }
 }
+
+pub(super) fn format_rate(rate: f64, unit: &str) -> String {
+    const K: f64 = 1e3;
+    const M: f64 = 1e6;
+    const G: f64 = 1e9;
+    if rate >= G {
+        format!("{:.2} G{}/s", rate / G, unit)
+    } else if rate >= M {
+        format!("{:.2} M{}/s", rate / M, unit)
+    } else if rate >= K {
+        format!("{:.2} K{}/s", rate / K, unit)
+    } else {
+        format!("{rate:.0} {}/s", unit)
+    }
+}

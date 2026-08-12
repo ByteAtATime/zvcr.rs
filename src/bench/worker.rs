@@ -1,10 +1,9 @@
 use super::{FileResult, Progress};
+use crate::definitions::SECTION_SIZE_BLOCKS;
 use crate::io::file_location::EXTENSION;
 use crate::raw::RegionData;
 use crate::region::delta::PackedDeltaData;
-use crate::{
-    ExperimentalReader, ExperimentalWriter, Reader, ReferenceReader, Writer,
-};
+use crate::{ExperimentalReader, ExperimentalWriter, Reader, ReferenceReader, Writer};
 use std::path::Path;
 use std::time::Instant;
 
@@ -15,17 +14,17 @@ fn snapshots_equal<const N: usize>(a: &PackedDeltaData<N>, b: &PackedDeltaData<N
     a.reverse_deltas
         .iter()
         .zip(b.reverse_deltas.iter())
-        .all(|(sa, sb)| {
-            sa.timestamp == sb.timestamp && sa.data.unpack() == sb.data.unpack()
-        })
+        .all(|(sa, sb)| sa.timestamp == sb.timestamp && sa.data.unpack() == sb.data.unpack())
 }
 
 fn semantically_equal(a: &RegionData, b: &RegionData) -> bool {
     if a.segments.len() != b.segments.len() {
         return false;
     }
-    a.segments.iter().zip(b.segments.iter()).all(|(sa, sb)| {
-        match (sa, sb) {
+    a.segments
+        .iter()
+        .zip(b.segments.iter())
+        .all(|(sa, sb)| match (sa, sb) {
             (None, None) => true,
             (Some(x), Some(y)) => {
                 x.block_sections.len() == y.block_sections.len()
@@ -42,8 +41,15 @@ fn semantically_equal(a: &RegionData, b: &RegionData) -> bool {
                     && x.tile_entities == y.tile_entities
             }
             _ => false,
-        }
-    })
+        })
+}
+
+fn count_voxels(data: &RegionData) -> u64 {
+    data.segments
+        .iter()
+        .flatten()
+        .map(|s| s.block_sections.len() as u64 * SECTION_SIZE_BLOCKS as u64)
+        .sum()
 }
 
 pub(super) fn bench_one(
@@ -69,6 +75,7 @@ pub(super) fn bench_one(
                     original_raw_bytes: 0,
                     encoded_bytes: 0,
                     encoded_raw_bytes: 0,
+                    voxels: 0,
                     ref_read_ns: 0,
                     exp_write_ns: 0,
                     exp_read_ns: 0,
@@ -93,6 +100,7 @@ pub(super) fn bench_one(
                     original_raw_bytes: uncompressed_file_size(&file_bytes),
                     encoded_bytes: 0,
                     encoded_raw_bytes: 0,
+                    voxels: 0,
                     ref_read_ns: 0,
                     exp_write_ns: 0,
                     exp_read_ns: 0,
@@ -106,6 +114,7 @@ pub(super) fn bench_one(
 
     let original_bytes = file_bytes.len() as u64;
     let original_raw_bytes = uncompressed_file_size(&file_bytes);
+    let voxels = count_voxels(&ref_data);
 
     let t1 = Instant::now();
     let encoded = match exp_writer.to_bytes(&ref_data) {
@@ -122,6 +131,7 @@ pub(super) fn bench_one(
                     original_raw_bytes,
                     encoded_bytes: 0,
                     encoded_raw_bytes: 0,
+                    voxels,
                     ref_read_ns,
                     exp_write_ns: 0,
                     exp_read_ns: 0,
@@ -151,6 +161,7 @@ pub(super) fn bench_one(
                     original_raw_bytes,
                     encoded_bytes,
                     encoded_raw_bytes,
+                    voxels,
                     ref_read_ns,
                     exp_write_ns,
                     exp_read_ns: 0,
@@ -174,6 +185,7 @@ pub(super) fn bench_one(
                 original_raw_bytes,
                 encoded_bytes,
                 encoded_raw_bytes,
+                voxels,
                 ref_read_ns,
                 exp_write_ns,
                 exp_read_ns,
@@ -201,6 +213,7 @@ pub(super) fn bench_one(
             original_raw_bytes,
             encoded_bytes,
             encoded_raw_bytes,
+            voxels,
             ref_read_ns,
             exp_write_ns,
             exp_read_ns,
@@ -227,5 +240,6 @@ fn finish(result: FileResult, failed: bool, progress: &Progress) -> FileResult {
     }
     progress.inc_done();
     progress.add_bytes(result.original_bytes);
+    progress.add_voxels(result.voxels);
     result
 }

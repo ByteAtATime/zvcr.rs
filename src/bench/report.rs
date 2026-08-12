@@ -1,4 +1,4 @@
-use super::format::{format_bytes, format_duration};
+use super::format::{format_bytes, format_duration, format_rate};
 use super::{FileResult, Progress};
 use std::io::Write;
 use std::sync::Arc;
@@ -14,10 +14,16 @@ pub(super) fn reporter(progress: Arc<Progress>, stop: Arc<AtomicBool>) {
         let done = progress.done.load(Ordering::Relaxed);
         let failed = progress.failed.load(Ordering::Relaxed);
         let bytes_in = progress.bytes_in.load(Ordering::Relaxed);
+        let voxels_in = progress.voxels_in.load(Ordering::Relaxed);
         let total = progress.total;
         let elapsed = progress.start.elapsed().as_secs_f64();
         let mbps = if elapsed > 0.0 {
             bytes_in as f64 / 1e6 / elapsed
+        } else {
+            0.0
+        };
+        let vps = if elapsed > 0.0 {
+            voxels_in as f64 / elapsed
         } else {
             0.0
         };
@@ -28,8 +34,9 @@ pub(super) fn reporter(progress: Arc<Progress>, stop: Arc<AtomicBool>) {
         };
         write!(
             stdout,
-            "\r\x1B[K[{done}/{total}] failed={failed} | {} processed | {mbps:.1} MB/s | ETA: {}",
+            "\r\x1B[K[{done}/{total}] failed={failed} | {} processed | {mbps:.1} MB/s | {} voxel/s | ETA: {}",
             format_bytes(bytes_in),
+            format_rate(vps),
             format_duration(Duration::from_secs_f64(eta))
         )
         .ok();
@@ -50,6 +57,7 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
     let output_bytes: u64 = results.iter().map(|r| r.encoded_bytes).sum();
     let input_raw_bytes: u64 = results.iter().map(|r| r.original_raw_bytes).sum();
     let output_raw_bytes: u64 = results.iter().map(|r| r.encoded_raw_bytes).sum();
+    let voxels: u64 = results.iter().map(|r| r.voxels).sum();
     let wall = progress.start.elapsed().as_secs_f64();
 
     let ref_read_ns: u128 = results.iter().map(|r| r.ref_read_ns).sum();
@@ -78,19 +86,20 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
         format_bytes(output_raw_bytes)
     );
     print_ratio_line("Raw ratio", input_raw_bytes, output_raw_bytes);
+    println!("Voxels    : {voxels}");
     println!("Time      : {wall:.1} s");
     println!("Throughput:");
     println!(
         "{}",
-        phase_line(" - reference read    :", input_bytes, ref_read_ns)
+        phase_line(" - reference read    :", input_bytes, voxels, ref_read_ns)
     );
     println!(
         "{}",
-        phase_line(" - experimental write:", input_bytes, exp_write_ns)
+        phase_line(" - experimental write:", input_bytes, voxels, exp_write_ns)
     );
     println!(
         "{}",
-        phase_line(" - experimental read :", input_bytes, exp_read_ns)
+        phase_line(" - experimental read :", input_bytes, voxels, exp_read_ns)
     );
 
     if failed > 0 {
@@ -107,13 +116,17 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
     }
 }
 
-fn phase_line(label: &str, input_bytes: u64, ns: u128) -> String {
+fn phase_line(label: &str, input_bytes: u64, voxels: u64, ns: u128) -> String {
     let agg_ms = ns as f64 / 1e6;
     if ns == 0 {
         format!("{label} n/a  ({agg_ms:.0} ms aggregate)")
     } else {
         let mbps = (input_bytes as f64 / (ns as f64 / 1e9)) / 1e6;
-        format!("{label} {mbps:>5.1} MB/s ({agg_ms:.0} ms aggregate)")
+        let vps = voxels as f64 / (ns as f64 / 1e9);
+        format!(
+            "{label} {mbps:>5.1} MB/s | {} voxel/s ({agg_ms:.0} ms aggregate)",
+            format_rate(vps)
+        )
     }
 }
 

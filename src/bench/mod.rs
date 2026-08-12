@@ -22,6 +22,7 @@ struct FileResult {
     encoded_bytes: u64,
     original_raw_bytes: u64,
     encoded_raw_bytes: u64,
+    voxels: u64,
     ref_read_ns: u128,
     exp_write_ns: u128,
     exp_read_ns: u128,
@@ -31,6 +32,7 @@ struct Progress {
     done: AtomicU64,
     failed: AtomicU64,
     bytes_in: AtomicU64,
+    voxels_in: AtomicU64,
     total: u64,
     start: Instant,
 }
@@ -46,6 +48,10 @@ impl Progress {
 
     fn add_bytes(&self, n: u64) {
         self.bytes_in.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn add_voxels(&self, n: u64) {
+        self.voxels_in.fetch_add(n, Ordering::Relaxed);
     }
 }
 
@@ -68,6 +74,7 @@ pub fn run(root: &Path, verify: bool, sample: Option<usize>) {
         done: AtomicU64::new(0),
         failed: AtomicU64::new(0),
         bytes_in: AtomicU64::new(0),
+        voxels_in: AtomicU64::new(0),
         total,
         start: Instant::now(),
     });
