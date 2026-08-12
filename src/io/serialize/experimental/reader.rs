@@ -1,6 +1,7 @@
 use super::File;
 use crate::definitions::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
 use crate::dimension::DimensionType;
+use crate::io::buffer::PooledBytes;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
@@ -37,7 +38,7 @@ impl DerefMut for ReadHandle {
 }
 
 impl ReadHandle {
-    pub(crate) fn new(data: bytes::Bytes, max_deltas: usize) -> Self {
+    pub(crate) fn new(data: PooledBytes, max_deltas: usize) -> Self {
         Self {
             ctx: Context::default(),
             cursor: ByteCursor::new(data),
@@ -266,7 +267,8 @@ impl ReadHandle {
         let compressed_slice = &self.data[self.pos..];
         let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
 
-        let mut region_handle = ReadHandle::new(bytes::Bytes::from(uncompressed), self.max_deltas);
+        let mut region_handle =
+            ReadHandle::new(PooledBytes::from_vec(uncompressed), self.max_deltas);
         region_handle.ctx = self.ctx.clone();
 
         let mut file = File {
@@ -284,7 +286,7 @@ impl ReadHandle {
 #[allow(dead_code)]
 pub(crate) fn read_file(filepath: &Path, max_deltas: usize) -> Result<File, ReadError> {
     let buffer = fs::read(filepath).map_err(|e| ReadError::FileNotFound(e.to_string()))?;
-    let mut handle = ReadHandle::new(bytes::Bytes::from(buffer), max_deltas);
+    let mut handle = ReadHandle::new(PooledBytes::from_vec(buffer), max_deltas);
     handle.deserialize_file()
 }
 

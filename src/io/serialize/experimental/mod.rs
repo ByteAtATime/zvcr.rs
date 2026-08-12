@@ -4,6 +4,7 @@ pub(crate) mod writer;
 
 pub(crate) use file::File;
 
+use crate::io::buffer::PooledBytes;
 use crate::io::serialize::types::{Reader, Writer};
 use crate::raw::RegionData;
 use crate::region::segment::Region;
@@ -51,7 +52,7 @@ impl ExperimentalReader {
 
 impl Reader for ExperimentalReader {
     fn from_bytes(&self, bytes: &[u8]) -> Result<RegionData, String> {
-        let mut handle = ReadHandle::new(bytes::Bytes::from(bytes.to_vec()), self.max_deltas);
+        let mut handle = ReadHandle::new(PooledBytes::from_vec(bytes.to_vec()), self.max_deltas);
         let file = handle.deserialize_file().map_err(|e| e.to_string())?;
         Ok(reconstruct_region(&file))
     }

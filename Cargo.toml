@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 ahash = "0.8.12"
-bytes = "1"
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
 thiserror = "2.0.19"

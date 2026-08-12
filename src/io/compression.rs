@@ -65,7 +65,9 @@ pub fn decompress_zstd(input: &[u8]) -> Result<Vec<u8>, String> {
             .and_then(|sz| usize::try_from(sz).ok());
 
         let cap = content_size.unwrap_or(0);
-        let mut decompressed = vec![0u8; cap];
+        let mut decompressed = crate::io::buffer::take_pooled_buffer(cap);
+        decompressed.clear();
+        decompressed.reserve(cap);
 
         if content_size.is_some() {
             if guard.is_none() {

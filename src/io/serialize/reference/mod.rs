@@ -5,6 +5,7 @@ pub(crate) mod writer;
 pub(crate) use file::File;
 
 use crate::dimension::DimensionType;
+use crate::io::buffer::PooledBytes;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::EXTENSION;
 use crate::io::serialize::context::Context;
@@ -88,7 +89,8 @@ impl Reader for ReferenceReader {
         let uncompressed =
             decompress_zstd(&bytes[header_len..]).map_err(|e| ReadError::Zstd(e).to_string())?;
 
-        let mut region_handle = ReadHandle::new(bytes::Bytes::from(uncompressed), self.max_deltas);
+        let mut region_handle =
+            ReadHandle::new(PooledBytes::from_vec(uncompressed), self.max_deltas);
         region_handle.ctx = ctx;
 
         let mut rd = RegionData {

@@ -1,15 +1,16 @@
 use crate::definitions::*;
+use crate::io::buffer::PooledBytes;
 use crate::region::palette::{PackScratch, Palette, build_palette_with};
 use crate::region::unpacked_view::UnpackedData;
 
-pub type LongArray = bytes::Bytes;
+pub type LongArray = PooledBytes;
 
-fn vec_u64_to_bytes(v: Vec<u64>) -> bytes::Bytes {
+fn vec_u64_to_bytes(v: Vec<u64>) -> PooledBytes {
     let len = v.len() * 8;
     let capacity = v.capacity() * 8;
     let mut v = std::mem::ManuallyDrop::new(v);
     let bytes: Vec<u8> = unsafe { Vec::from_raw_parts(v.as_mut_ptr() as *mut u8, len, capacity) };
-    bytes::Bytes::from(bytes)
+    PooledBytes::from_vec(bytes)
 }
 
 fn packed_u64_iter(bytes: &[u8]) -> impl Iterator<Item = u64> + '_ {

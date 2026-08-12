@@ -1,5 +1,5 @@
+use crate::io::buffer::PooledBytes;
 use crate::io::serialize::error::ReadError;
-use bytes::Bytes;
 
 pub(crate) fn put_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
@@ -25,21 +25,21 @@ pub(crate) fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
 compile_error!("only little-endian targets are supported");
 
 pub(crate) struct ByteCursor {
-    pub(crate) data: Bytes,
+    pub(crate) data: PooledBytes,
     pub(crate) pos: usize,
 }
 
 impl ByteCursor {
-    pub(crate) fn new(data: Bytes) -> Self {
+    pub(crate) fn new(data: PooledBytes) -> Self {
         Self { data, pos: 0 }
     }
 
     #[inline]
-    pub(crate) fn take_slice(&mut self, n: usize) -> Result<Bytes, ReadError> {
+    pub(crate) fn take_slice(&mut self, n: usize) -> Result<PooledBytes, ReadError> {
         if self.pos + n > self.data.len() {
             return Err(ReadError::OutOfBounds { offset: self.pos });
         }
-        let slice = self.data.slice(self.pos..self.pos + n);
+        let slice = self.data.slice(self.pos, n);
         self.pos += n;
         Ok(slice)
     }
