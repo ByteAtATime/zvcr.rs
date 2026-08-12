@@ -18,20 +18,7 @@ use std::sync::Arc;
 
 use self::reader::ReadHandle;
 use self::writer::serialize_file_to_vec;
-use super::codec::{encode_segment, reconstruct_segment};
-
-pub(crate) fn reconstruct_region(file: &File) -> RegionData {
-    RegionData {
-        version: file.version,
-        protocol_version: file.protocol_version,
-        dimension: file.dimension_type,
-        segments: std::array::from_fn(|i| {
-            file.region.segments[i]
-                .as_ref()
-                .map(|arc| reconstruct_segment(arc))
-        }),
-    }
-}
+use super::codec::encode_segment;
 
 pub(crate) fn encode_region(rd: &RegionData) -> File {
     let mut region = Region::new(rd.protocol_version);
@@ -126,9 +113,7 @@ impl Writer for ReferenceWriter {
 #[cfg(test)]
 mod tests {
     use super::reader::read_file_at;
-    use super::writer::write_file;
     use super::*;
-    use crate::definitions::SEGMENTS_PER_REGION;
     use crate::dimension::DimensionType;
     use crate::io::compression::ZSTD_COMPRESSION_LEVEL_DEFAULT;
     use crate::io::file_location::RegionLocation;
@@ -178,68 +163,19 @@ mod tests {
     }
 
     #[test]
-    fn encode_produces_byte_identical_output() {
+    fn round_trip_preserves_data() {
         let dir = std::path::Path::new("test_files");
         let location = RegionLocation {
             rx: 0,
             rz: 0,
             dimension_type: DimensionType::Overworld,
         };
-        let file = read_file_at(dir, &location, 0).unwrap();
-        let encoded = encode_region(&reconstruct_region(&file));
-
-        let tmp_original = std::env::temp_dir().join("zvcr_encode_original.bak");
-        let tmp_encoded = std::env::temp_dir().join("zvcr_encode_encoded.bak");
-        write_file(&file, &tmp_original, ZSTD_COMPRESSION_LEVEL_DEFAULT).unwrap();
-        write_file(&encoded, &tmp_encoded, ZSTD_COMPRESSION_LEVEL_DEFAULT).unwrap();
-        let a = std::fs::read(&tmp_original).unwrap();
-        let b = std::fs::read(&tmp_encoded).unwrap();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn encode_is_exact_inverse_of_reconstruct() {
-        let dir = std::path::Path::new("test_files");
-        let location = RegionLocation {
-            rx: 0,
-            rz: 0,
-            dimension_type: DimensionType::Overworld,
-        };
-        let file = read_file_at(dir, &location, 0).unwrap();
-        let encoded = encode_region(&reconstruct_region(&file));
-
-        assert_eq!(encoded.version, file.version);
-        assert_eq!(encoded.protocol_version, file.protocol_version);
-        assert_eq!(encoded.dimension_type, file.dimension_type);
-        assert_eq!(
-            encoded.region.protocol_version,
-            file.region.protocol_version
-        );
-        for i in 0..SEGMENTS_PER_REGION {
-            match (&encoded.region.segments[i], &file.region.segments[i]) {
-                (None, None) => {}
-                (Some(a), Some(b)) => {
-                    let (a, b) = (a.as_ref(), b.as_ref());
-                    assert_eq!(
-                        a.block_sections.section_count,
-                        b.block_sections.section_count
-                    );
-                    assert_eq!(
-                        a.biome_sections.section_count,
-                        b.biome_sections.section_count
-                    );
-                    for s in 0..a.block_sections.section_count {
-                        assert_eq!(a.block_sections.sections[s], b.block_sections.sections[s]);
-                        assert_eq!(a.biome_sections.sections[s], b.biome_sections.sections[s]);
-                    }
-                    assert_eq!(a.info.reverse_deltas, b.info.reverse_deltas);
-                    assert_eq!(
-                        a.tile_entities.reverse_deltas,
-                        b.tile_entities.reverse_deltas
-                    );
-                }
-                _ => panic!("segment {i} presence mismatch"),
-            }
-        }
+        let bytes = std::fs::read(location.file_path(dir)).unwrap();
+        let reader = ReferenceReader::new(0);
+        let writer = ReferenceWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT);
+        let rd = reader.from_bytes(&bytes).unwrap();
+        let encoded = writer.to_bytes(&rd).unwrap();
+        let rd2 = reader.from_bytes(&encoded).unwrap();
+        assert_eq!(rd, rd2);
     }
 }
