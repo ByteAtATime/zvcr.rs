@@ -43,6 +43,7 @@ impl ByteCursor {
         Self { data, pos: 0 }
     }
 
+    #[inline]
     pub(crate) fn read_bytes<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
         if self.pos + N > self.data.len() {
             return Err(ReadError::OutOfBounds { offset: self.pos });
@@ -53,22 +54,27 @@ impl ByteCursor {
         Ok(bytes)
     }
 
+    #[inline]
     pub(crate) fn read_u8(&mut self) -> Result<u8, ReadError> {
         Ok(self.read_bytes::<1>()?[0])
     }
 
+    #[inline]
     pub(crate) fn read_u16(&mut self) -> Result<u16, ReadError> {
         Ok(u16::from_le_bytes(self.read_bytes::<2>()?))
     }
 
+    #[inline]
     pub(crate) fn read_u32(&mut self) -> Result<u32, ReadError> {
         Ok(u32::from_le_bytes(self.read_bytes::<4>()?))
     }
 
+    #[inline]
     pub(crate) fn read_u64(&mut self) -> Result<u64, ReadError> {
         Ok(u64::from_le_bytes(self.read_bytes::<8>()?))
     }
 
+    #[inline]
     pub(crate) fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ReadError> {
         let n = buf.len();
         if self.pos + n > self.data.len() {
