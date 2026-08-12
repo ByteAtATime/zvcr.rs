@@ -52,8 +52,9 @@ impl ReferenceReader {
 impl Reader for ReferenceReader {
     fn from_bytes(&self, bytes: &[u8]) -> Result<RegionData, String> {
         let mut handle = ReadHandle::new(bytes.to_vec(), self.max_deltas);
-        let file = handle.deserialize_file().map_err(|e| e.to_string())?;
-        Ok(reconstruct_region(&file))
+        handle
+            .deserialize_to_region_data()
+            .map_err(|e| e.to_string())
     }
 }
 

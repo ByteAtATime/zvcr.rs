@@ -6,6 +6,7 @@ use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::io::serialize::primitives::ByteCursor;
+use crate::raw::{RegionData, SegmentData};
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
 use crate::region::palette::{DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette, bits_per_entry};
@@ -361,6 +362,80 @@ impl ReadHandle {
 
         region_handle.deserialize_region(&mut file.region)?;
         Ok(file)
+    }
+
+    pub(crate) fn deserialize_to_region_data(&mut self) -> Result<RegionData, ReadError> {
+        self.validate_file_prefix(EXTENSION)?;
+        let version = self.deserialize_version(ZVCR3D_LATEST_VERSION)?;
+        let dimension_type = self.deserialize_dimension_type()?;
+        let protocol_version = self.read_u16()?;
+
+        self.ctx.protocol_version = protocol_version;
+
+        let compressed_slice = &self.data[self.pos..];
+        let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
+
+        let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
+        region_handle.ctx = self.ctx.clone();
+
+        let mut rd = RegionData {
+            version,
+            protocol_version,
+            dimension: dimension_type,
+            segments: std::array::from_fn(|_| None),
+        };
+
+        region_handle.deserialize_region_data(&mut rd)?;
+        Ok(rd)
+    }
+
+    pub(crate) fn deserialize_region_data(&mut self, rd: &mut RegionData) -> Result<(), ReadError> {
+        let mut block_table = Vec::new();
+        let mut biome_table = Vec::new();
+
+        self.deserialize_palette_table(&mut block_table)?;
+        self.deserialize_palette_table(&mut biome_table)?;
+
+        for slot in rd.segments.iter_mut() {
+            let indicator = self.read_u8()?;
+            if indicator != 0 {
+                *slot = Some(self.deserialize_segment_data(&block_table, &biome_table)?);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn deserialize_segment_data(
+        &mut self,
+        block_tables: &[Palette],
+        biome_tables: &[Palette],
+    ) -> Result<SegmentData, ReadError> {
+        let sc = self.ctx.section_count;
+        let mut block_sections: Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>> = Vec::with_capacity(sc);
+        for _ in 0..sc {
+            block_sections.push(PackedDeltaData::default());
+        }
+        for section in block_sections.iter_mut() {
+            self.deserialize_packed_delta_data(section, block_tables)?;
+        }
+
+        let mut biome_sections: Vec<PackedDeltaData<SECTION_SIZE_BIOMES>> = Vec::with_capacity(sc);
+        for _ in 0..sc {
+            biome_sections.push(PackedDeltaData::default());
+        }
+        for section in biome_sections.iter_mut() {
+            self.deserialize_packed_delta_data(section, biome_tables)?;
+        }
+
+        let info = self.deserialize_segment_info()?;
+        let tile_entities = self.deserialize_tile_entities()?;
+
+        Ok(SegmentData {
+            block_sections,
+            biome_sections,
+            states: info.reverse_deltas,
+            tile_entities,
+        })
     }
 }
 
