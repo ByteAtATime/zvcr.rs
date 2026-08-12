@@ -1,8 +1,6 @@
-use crate::io::serialize::error::{ReadError, MAX_PALETTE_TABLE_LENGTH};
+use crate::io::serialize::error::{MAX_PALETTE_TABLE_LENGTH, ReadError};
 use crate::io::serialize::primitives::{ByteCursor, put_u16_le, put_u32_le};
-use crate::region::palette::{
-    DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette, bits_per_entry,
-};
+use crate::region::palette::{DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette, bits_per_entry};
 use ahash::AHashMap;
 
 pub(crate) struct PaletteTable {
@@ -34,9 +32,7 @@ impl PaletteTable {
             return;
         }
         let mut ordering: Vec<(Palette, usize)> = self.entries.drain().collect();
-        ordering.sort_unstable_by(|a, b| {
-            b.1.cmp(&a.1).then_with(|| a.0.palette.cmp(&b.0.palette))
-        });
+        ordering.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.palette.cmp(&b.0.palette)));
         self.entries = AHashMap::with_capacity(ordering.len());
         for (rank, (palette, _)) in ordering.into_iter().enumerate() {
             self.entries.insert(palette, rank);
