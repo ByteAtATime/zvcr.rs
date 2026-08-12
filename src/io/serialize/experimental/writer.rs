@@ -38,7 +38,7 @@ impl WriteHandle {
     fn serialize_packed_snapshot<const N: usize>(
         data: &mut Vec<u8>,
         snapshot: &PackedSnapshot<N>,
-        palette_table: &mut PaletteTable,
+        palette_table: &PaletteTable,
     ) {
         put_u64_le(data, snapshot.timestamp as u64);
         match &snapshot.data.data {
@@ -59,12 +59,32 @@ impl WriteHandle {
     fn serialize_packed_delta_data<const N: usize>(
         data: &mut Vec<u8>,
         delta_data: &PackedDeltaData<N>,
-        palette_table: &mut PaletteTable,
+        palette_table: &PaletteTable,
     ) {
         let snapshots = delta_data.snapshots();
         put_u64_le(data, snapshots.len() as u64);
         for snapshot in snapshots {
             Self::serialize_packed_snapshot(data, snapshot, palette_table);
+        }
+    }
+
+    fn record_packed_delta_data<const N: usize>(
+        delta_data: &PackedDeltaData<N>,
+        palette_table: &mut PaletteTable,
+    ) {
+        for snapshot in delta_data.snapshots() {
+            if let Data::Paletted(paletted) = &snapshot.data.data {
+                palette_table.record(&paletted.palette);
+            }
+        }
+    }
+
+    fn record_segment_palettes(&mut self, segment: &Segment) {
+        for section in segment.block_sections.active() {
+            Self::record_packed_delta_data(section, &mut self.block_palette_table);
+        }
+        for section in segment.biome_sections.active() {
+            Self::record_packed_delta_data(section, &mut self.biome_palette_table);
         }
     }
 
@@ -134,6 +154,12 @@ impl WriteHandle {
                 if segment.is_some() { 1 } else { 0 },
             );
         }
+
+        for segment in region.segments.iter().flatten() {
+            inner_handle.record_segment_palettes(segment);
+        }
+        inner_handle.block_palette_table.finalize();
+        inner_handle.biome_palette_table.finalize();
 
         for segment in region.segments.iter().flatten() {
             inner_handle.serialize_segment(segment);

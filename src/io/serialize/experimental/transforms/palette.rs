@@ -7,25 +7,48 @@ use ahash::AHashMap;
 
 pub(crate) struct PaletteTable {
     entries: AHashMap<Palette, usize>,
+    finalized: bool,
 }
 
 impl PaletteTable {
     pub(crate) fn new() -> Self {
         Self {
             entries: AHashMap::new(),
+            finalized: false,
         }
     }
 
-    pub(crate) fn index_for(&mut self, palette: &Palette) -> u32 {
+    pub(crate) fn record(&mut self, palette: &Palette) {
+        if palette.direct() {
+            return;
+        }
+        if let Some(count) = self.entries.get_mut(palette) {
+            *count += 1;
+        } else {
+            self.entries.insert(palette.clone(), 1);
+        }
+    }
+
+    pub(crate) fn finalize(&mut self) {
+        if self.finalized {
+            return;
+        }
+        let mut ordering: Vec<(Palette, usize)> = self.entries.drain().collect();
+        ordering.sort_unstable_by(|a, b| {
+            b.1.cmp(&a.1).then_with(|| a.0.palette.cmp(&b.0.palette))
+        });
+        self.entries = AHashMap::with_capacity(ordering.len());
+        for (rank, (palette, _)) in ordering.into_iter().enumerate() {
+            self.entries.insert(palette, rank);
+        }
+        self.finalized = true;
+    }
+
+    pub(crate) fn index_for(&self, palette: &Palette) -> u32 {
         if palette.direct() {
             return u32::MAX;
         }
-        if let Some(&existing) = self.entries.get(palette) {
-            return existing as u32;
-        }
-        let next_index = self.entries.len();
-        self.entries.insert(palette.clone(), next_index);
-        next_index as u32
+        self.entries[palette] as u32
     }
 
     pub(crate) fn serialize(&self, buf: &mut Vec<u8>) {
