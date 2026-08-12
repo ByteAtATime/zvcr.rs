@@ -184,7 +184,7 @@ impl WriteHandle {
     pub(crate) fn serialize_file(&mut self, file: &File) -> Result<(), String> {
         self.ctx.initialize_section_count(file.dimension_type);
         put_bytes(&mut self.data, EXTENSION.as_bytes());
-        put_u8(&mut self.data, ZVCR3D_LATEST_VERSION as u8);
+        put_u8(&mut self.data, Version::Zvcr3d1000 as u8);
         put_u8(&mut self.data, file.dimension_type as u8);
         put_u16_le(&mut self.data, file.protocol_version);
 
