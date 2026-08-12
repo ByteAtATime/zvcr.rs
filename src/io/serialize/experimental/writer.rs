@@ -1,10 +1,11 @@
+use super::transforms::palette::PaletteTable;
 use super::File;
 use crate::io::compression::*;
 use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
 use crate::io::serialize::primitives::*;
 use crate::region::delta::PackedDeltaData;
-use crate::region::packed_data::PackedSnapshot;
+use crate::region::packed_data::{Data, PackedSnapshot};
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
@@ -16,6 +17,8 @@ pub(crate) struct WriteHandle {
     pub(crate) compression_level: i32,
     pub(crate) ctx: Context,
     pub(crate) data: Vec<u8>,
+    block_palette_table: PaletteTable,
+    biome_palette_table: PaletteTable,
 }
 
 impl WriteHandle {
@@ -27,36 +30,41 @@ impl WriteHandle {
                 protocol_version,
             },
             data: Vec::with_capacity(32 * 1024 * 1024),
+            block_palette_table: PaletteTable::new(),
+            biome_palette_table: PaletteTable::new(),
         }
     }
 
-    fn put_atoms<const N: usize>(&mut self, atoms: &[u16; N]) {
-        let byte_len = N * std::mem::size_of::<u16>();
-        self.data.reserve(byte_len);
-        #[cfg(target_endian = "little")]
-        self.data.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(atoms.as_ptr() as *const u8, byte_len)
-        });
-        #[cfg(not(target_endian = "little"))]
-        for &atom in atoms {
-            put_u16_le(&mut self.data, atom);
+    fn serialize_packed_snapshot<const N: usize>(
+        data: &mut Vec<u8>,
+        snapshot: &PackedSnapshot<N>,
+        palette_table: &mut PaletteTable,
+    ) {
+        put_u64_le(data, snapshot.timestamp as u64);
+        match &snapshot.data.data {
+            Data::Single(val) => {
+                put_u8(data, 0);
+                put_u16_le(data, *val);
+            }
+            Data::Paletted(paletted) => {
+                put_u8(data, 1);
+                let packed_u64_count = (paletted.packed_long_array.len() / 8) as u64;
+                put_u64_le(data, packed_u64_count);
+                data.extend_from_slice(&paletted.packed_long_array);
+                put_u32_le(data, palette_table.index_for(&paletted.palette));
+            }
         }
     }
 
-    pub(crate) fn serialize_snapshot<const N: usize>(&mut self, snapshot: &PackedSnapshot<N>) {
-        put_u64_le(&mut self.data, snapshot.timestamp as u64);
-        let atoms = snapshot.data.unpack();
-        self.put_atoms(&atoms);
-    }
-
-    pub(crate) fn serialize_packed_delta_data<const N: usize>(
-        &mut self,
+    fn serialize_packed_delta_data<const N: usize>(
+        data: &mut Vec<u8>,
         delta_data: &PackedDeltaData<N>,
+        palette_table: &mut PaletteTable,
     ) {
         let snapshots = delta_data.snapshots();
-        put_u64_le(&mut self.data, snapshots.len() as u64);
+        put_u64_le(data, snapshots.len() as u64);
         for snapshot in snapshots {
-            self.serialize_snapshot(snapshot);
+            Self::serialize_packed_snapshot(data, snapshot, palette_table);
         }
     }
 
@@ -99,10 +107,18 @@ impl WriteHandle {
 
     pub(crate) fn serialize_segment(&mut self, segment: &Segment) {
         for section in segment.block_sections.active() {
-            self.serialize_packed_delta_data(section);
+            Self::serialize_packed_delta_data(
+                &mut self.data,
+                section,
+                &mut self.block_palette_table,
+            );
         }
         for section in segment.biome_sections.active() {
-            self.serialize_packed_delta_data(section);
+            Self::serialize_packed_delta_data(
+                &mut self.data,
+                section,
+                &mut self.biome_palette_table,
+            );
         }
         self.serialize_segment_info(&segment.info);
         self.serialize_tile_entities(&segment.tile_entities);
@@ -123,7 +139,14 @@ impl WriteHandle {
             inner_handle.serialize_segment(segment);
         }
 
-        let compressed = compress_zstd_parts(&[&inner_handle.data], self.compression_level)?;
+        let mut palette_tables = Vec::new();
+        inner_handle.block_palette_table.serialize(&mut palette_tables);
+        inner_handle.biome_palette_table.serialize(&mut palette_tables);
+
+        let compressed = compress_zstd_parts(
+            &[&palette_tables, &inner_handle.data],
+            self.compression_level,
+        )?;
         put_bytes(&mut self.data, &compressed);
         Ok(())
     }

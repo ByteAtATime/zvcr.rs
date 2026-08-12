@@ -1,5 +1,6 @@
+use super::transforms::palette::{deserialize_palette_table, palette_at};
 use super::File;
-use crate::definitions::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
+use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::buffer::PooledBytes;
 use crate::io::compression::decompress_zstd;
@@ -8,7 +9,8 @@ use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::io::serialize::primitives::ByteCursor;
 use crate::region::delta::PackedDeltaData;
-use crate::region::packed_data::{Data, PackedData, PackedSnapshot};
+use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
+use crate::region::palette::Palette;
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
@@ -71,40 +73,69 @@ impl ReadHandle {
         Ok(dim)
     }
 
-    fn read_atoms<const N: usize>(&mut self, active: bool) -> Result<[u16; N], ReadError> {
-        let mut atoms = [0u16; N];
-        if !active {
-            self.pos += N * std::mem::size_of::<u16>();
-            return Ok(atoms);
-        }
-        let byte_len = N * std::mem::size_of::<u16>();
-        {
-            let byte_slice =
-                unsafe { std::slice::from_raw_parts_mut(atoms.as_mut_ptr() as *mut u8, byte_len) };
-            self.read_exact(byte_slice)?;
-        }
-        Ok(atoms)
-    }
-
-    pub(crate) fn deserialize_snapshot<const N: usize>(
+    pub(crate) fn deserialize_packed_snapshot_value<const N: usize>(
         &mut self,
-        active: bool,
+        palette_table: &[Palette],
     ) -> Result<PackedSnapshot<N>, ReadError> {
         let timestamp = self.read_u64()? as i64;
-        let atoms = self.read_atoms::<N>(active)?;
-        let data = if active {
-            PackedData::pack(&atoms)
-        } else {
-            PackedData {
-                data: Data::Single(0),
-            }
-        };
-        Ok(PackedSnapshot { data, timestamp })
+        let data_type = self.read_u8()?;
+
+        if data_type == 0 {
+            let single_val = self.read_u16()?;
+            return Ok(PackedSnapshot {
+                data: PackedData {
+                    data: Data::Single(single_val),
+                },
+                timestamp,
+            });
+        }
+
+        let packed_length = self.read_u64()?;
+        if packed_length > MAX_PACKED_LENGTH {
+            return Err(ReadError::LengthExceeded(
+                "Packed length invalid".to_string(),
+            ));
+        }
+
+        let packed_bytes = self.take_slice(packed_length as usize * 8)?;
+
+        let palette_index = self.read_u32()?;
+        let palette = palette_at(palette_index, palette_table)?.clone();
+
+        Ok(PackedSnapshot {
+            data: PackedData {
+                data: Data::Paletted(PalettedData {
+                    packed_long_array: packed_bytes,
+                    palette,
+                }),
+            },
+            timestamp,
+        })
+    }
+
+    pub(crate) fn skip_packed_snapshot(&mut self) -> Result<(), ReadError> {
+        let _timestamp = self.read_u64()?;
+        let data_type = self.read_u8()?;
+        if data_type == 0 {
+            let _single_val = self.read_u16()?;
+            return Ok(());
+        }
+
+        let packed_length = self.read_u64()?;
+        if packed_length > MAX_PACKED_LENGTH {
+            return Err(ReadError::LengthExceeded(
+                "Packed length invalid".to_string(),
+            ));
+        }
+        self.skip(packed_length as usize * 8)?;
+        let _palette_index = self.read_u32()?;
+        Ok(())
     }
 
     pub(crate) fn read_section_group<const N: usize>(
         &mut self,
         section_count: usize,
+        palette_table: &[Palette],
     ) -> Result<(Arc<Vec<PackedSnapshot<N>>>, Vec<Range<usize>>), ReadError> {
         let mut shared: Vec<PackedSnapshot<N>> = Vec::new();
         let mut ranges: Vec<Range<usize>> = Vec::with_capacity(section_count);
@@ -120,11 +151,11 @@ impl ReadHandle {
             let delta_length = delta_length_raw as usize;
             shared.reserve(delta_length);
             for delta_index in 0..delta_length {
-                let active = self.max_deltas == 0 || delta_index < self.max_deltas;
-                let snapshot = self.deserialize_snapshot::<N>(active)?;
-                if active {
-                    shared.push(snapshot);
+                if self.max_deltas != 0 && delta_index >= self.max_deltas {
+                    self.skip_packed_snapshot()?;
+                    continue;
                 }
+                shared.push(self.deserialize_packed_snapshot_value::<N>(palette_table)?);
             }
             ranges.push(start..shared.len());
         }
@@ -219,18 +250,24 @@ impl ReadHandle {
         Ok(tile_entities)
     }
 
-    pub(crate) fn deserialize_segment(&mut self) -> Result<Arc<Segment>, ReadError> {
+    pub(crate) fn deserialize_segment(
+        &mut self,
+        block_tables: &[Palette],
+        biome_tables: &[Palette],
+    ) -> Result<Arc<Segment>, ReadError> {
         let sc = self.ctx.section_count;
         let mut segment = Segment::with_section_count(sc);
 
-        let (block_storage, block_ranges) = self.read_section_group::<SECTION_SIZE_BLOCKS>(sc)?;
+        let (block_storage, block_ranges) =
+            self.read_section_group::<SECTION_SIZE_BLOCKS>(sc, block_tables)?;
         for (slot, r) in segment.block_sections.sections[..sc]
             .iter_mut()
             .zip(block_ranges)
         {
             *slot = PackedDeltaData::from_shared(Arc::clone(&block_storage), r);
         }
-        let (biome_storage, biome_ranges) = self.read_section_group::<SECTION_SIZE_BIOMES>(sc)?;
+        let (biome_storage, biome_ranges) =
+            self.read_section_group::<SECTION_SIZE_BIOMES>(sc, biome_tables)?;
         for (slot, r) in segment.biome_sections.sections[..sc]
             .iter_mut()
             .zip(biome_ranges)
@@ -244,13 +281,16 @@ impl ReadHandle {
     }
 
     pub(crate) fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
+        let block_table = deserialize_palette_table(self)?;
+        let biome_table = deserialize_palette_table(self)?;
+
         let mut present = vec![false; SEGMENTS_PER_REGION];
         for v in present.iter_mut() {
             *v = self.read_u8()? != 0;
         }
         for (i, &is_present) in present.iter().enumerate() {
             if is_present {
-                region.segments[i] = Some(self.deserialize_segment()?);
+                region.segments[i] = Some(self.deserialize_segment(&block_table, &biome_table)?);
             }
         }
         Ok(())

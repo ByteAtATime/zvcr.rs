@@ -1,5 +1,6 @@
 pub(crate) mod file;
 pub(crate) mod reader;
+pub(crate) mod transforms;
 pub(crate) mod writer;
 
 pub(crate) use file::File;
