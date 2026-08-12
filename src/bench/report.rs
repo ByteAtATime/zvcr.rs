@@ -101,6 +101,10 @@ pub(super) fn print_summary(results: &[FileResult], progress: &Progress, verify:
         "{}",
         phase_line(" - experimental read :", input_bytes, voxels, exp_read_ns)
     );
+    println!(
+        "decompress_ns: {}",
+        crate::io::compression::DECOMPRESS_NS.load(Ordering::Relaxed)
+    );
 
     if failed > 0 {
         println!("Failures:");

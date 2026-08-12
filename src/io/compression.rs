@@ -17,6 +17,30 @@ struct CachedCompressor {
 thread_local! {
     static ZSTD_COMPRESSOR: RefCell<Option<CachedCompressor>> = const { RefCell::new(None) };
     static ZSTD_DECOMPRESSOR: RefCell<Option<Decompressor<'static>>> = const { RefCell::new(None) };
+    static BUFFER_POOL: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn take_buffer(min_cap: usize) -> Vec<u8> {
+    BUFFER_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if let Some(idx) = pool.iter().position(|b| b.capacity() >= min_cap) {
+            pool.swap_remove(idx)
+        } else {
+            Vec::with_capacity(min_cap)
+        }
+    })
+}
+
+pub(crate) fn return_buffer(mut buf: Vec<u8>) {
+    if buf.capacity() >= 1 << 20 {
+        buf.clear();
+        BUFFER_POOL.with(|pool| {
+            let mut pool = pool.borrow_mut();
+            if pool.len() < 4 {
+                pool.push(buf);
+            }
+        });
+    }
 }
 
 pub fn default_compression_threads() -> u32 {
@@ -64,7 +88,12 @@ pub fn decompress_zstd(input: &[u8]) -> Result<Vec<u8>, String> {
             .flatten()
             .and_then(|sz| usize::try_from(sz).ok());
 
-        if let Some(content_size) = content_size {
+        let cap = content_size.unwrap_or(0);
+        let mut decompressed = take_buffer(cap);
+        decompressed.clear();
+        decompressed.reserve(cap);
+
+        if content_size.is_some() {
             if guard.is_none() {
                 let decompressor = Decompressor::new()
                     .map_err(|e| format!("Failed to create bulk decompressor: {e}"))?;
@@ -72,21 +101,15 @@ pub fn decompress_zstd(input: &[u8]) -> Result<Vec<u8>, String> {
             }
 
             let decompressor = guard.as_mut().unwrap();
-            let mut decompressed = vec![0u8; content_size];
-
-            match decompressor.decompress_to_buffer(input, &mut decompressed) {
-                Ok(written) if written == content_size => return Ok(decompressed),
-                Ok(written) => {
-                    decompressed.truncate(written);
-                    return Ok(decompressed);
-                }
-                Err(_) => {
-                    // fall back to decode_all (prolly shouldn't happen though)
-                }
+            if let Ok(written) = decompressor.decompress_to_buffer(input, &mut decompressed) {
+                decompressed.truncate(written);
+                return Ok(decompressed);
             }
         }
 
-        zstd::decode_all(input).map_err(|e| format!("ZSTD decompression error: {e}"))
+        decompressed =
+            zstd::decode_all(input).map_err(|e| format!("ZSTD decompression error: {e}"))?;
+        Ok(decompressed)
     });
 
     DECOMPRESS_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);

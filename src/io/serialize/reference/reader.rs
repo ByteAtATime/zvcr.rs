@@ -361,6 +361,7 @@ impl ReadHandle {
         };
 
         region_handle.deserialize_region(&mut file.region)?;
+        crate::io::compression::return_buffer(std::mem::take(&mut region_handle.data));
         Ok(file)
     }
 
@@ -386,6 +387,7 @@ impl ReadHandle {
         };
 
         region_handle.deserialize_region_data(&mut rd)?;
+        crate::io::compression::return_buffer(std::mem::take(&mut region_handle.data));
         Ok(rd)
     }
 
