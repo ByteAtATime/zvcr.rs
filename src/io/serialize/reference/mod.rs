@@ -148,7 +148,7 @@ mod tests {
                 let history = reconstruct_history(section);
                 for (i, snapshot) in history.iter().enumerate() {
                     let expected = section
-                        .snapshot_before(section.reverse_deltas[i].timestamp)
+                        .snapshot_before(section.snapshots()[i].timestamp)
                         .unwrap();
                     assert_eq!(snapshot.data, expected);
                 }
@@ -158,7 +158,7 @@ mod tests {
                 let history = reconstruct_history(section);
                 for (i, snapshot) in history.iter().enumerate() {
                     let expected = section
-                        .snapshot_before(section.reverse_deltas[i].timestamp)
+                        .snapshot_before(section.snapshots()[i].timestamp)
                         .unwrap();
                     assert_eq!(snapshot.data, expected);
                 }

@@ -8,13 +8,14 @@ use std::path::Path;
 use std::time::Instant;
 
 fn snapshots_equal<const N: usize>(a: &PackedDeltaData<N>, b: &PackedDeltaData<N>) -> bool {
-    if a.reverse_deltas.len() != b.reverse_deltas.len() {
+    let sa = a.snapshots();
+    let sb = b.snapshots();
+    if sa.len() != sb.len() {
         return false;
     }
-    a.reverse_deltas
-        .iter()
-        .zip(b.reverse_deltas.iter())
-        .all(|(sa, sb)| sa.timestamp == sb.timestamp && sa.data.unpack() == sb.data.unpack())
+    sa.iter()
+        .zip(sb.iter())
+        .all(|(x, y)| x.timestamp == y.timestamp && x.data.unpack() == y.data.unpack())
 }
 
 fn semantically_equal(a: &RegionData, b: &RegionData) -> bool {

@@ -1,5 +1,5 @@
 use super::File;
-use crate::definitions::SEGMENTS_PER_REGION;
+use crate::definitions::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
@@ -13,7 +13,7 @@ use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use crate::version::*;
 use std::fs;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -101,35 +101,34 @@ impl ReadHandle {
         Ok(PackedSnapshot { data, timestamp })
     }
 
-    pub(crate) fn deserialize_packed_delta_data<const N: usize>(
+    pub(crate) fn read_section_group<const N: usize>(
         &mut self,
-        deltas: &mut PackedDeltaData<N>,
-    ) -> Result<(), ReadError> {
-        let delta_length = self.read_u64()?;
-        if delta_length > MAX_DELTA_LENGTH {
-            return Err(ReadError::LengthExceeded(
-                "Delta length too high".to_string(),
-            ));
-        }
+        section_count: usize,
+    ) -> Result<(Arc<Vec<PackedSnapshot<N>>>, Vec<Range<usize>>), ReadError> {
+        let mut shared: Vec<PackedSnapshot<N>> = Vec::new();
+        let mut ranges: Vec<Range<usize>> = Vec::with_capacity(section_count);
 
-        deltas.reverse_deltas.resize(
-            delta_length as usize,
-            PackedSnapshot {
-                data: PackedData {
-                    data: Data::Single(0),
-                },
-                timestamp: 0,
-            },
-        );
-
-        for delta_index in 0..delta_length as usize {
-            let active = self.max_deltas == 0 || delta_index < self.max_deltas;
-            let snapshot = self.deserialize_snapshot::<N>(active)?;
-            if active {
-                deltas.reverse_deltas[delta_index] = snapshot;
+        for _ in 0..section_count {
+            let start = shared.len();
+            let delta_length_raw = self.read_u64()?;
+            if delta_length_raw > MAX_DELTA_LENGTH {
+                return Err(ReadError::LengthExceeded(
+                    "Delta length too high".to_string(),
+                ));
             }
+            let delta_length = delta_length_raw as usize;
+            shared.reserve(delta_length);
+            for delta_index in 0..delta_length {
+                let active = self.max_deltas == 0 || delta_index < self.max_deltas;
+                let snapshot = self.deserialize_snapshot::<N>(active)?;
+                if active {
+                    shared.push(snapshot);
+                }
+            }
+            ranges.push(start..shared.len());
         }
-        Ok(())
+
+        Ok((Arc::new(shared), ranges))
     }
 
     pub(crate) fn deserialize_segment_state(&mut self) -> Result<SegmentState, ReadError> {
@@ -220,13 +219,22 @@ impl ReadHandle {
     }
 
     pub(crate) fn deserialize_segment(&mut self) -> Result<Arc<Segment>, ReadError> {
-        let mut segment = Segment::with_section_count(self.ctx.section_count);
+        let sc = self.ctx.section_count;
+        let mut segment = Segment::with_section_count(sc);
 
-        for section in segment.block_sections.active_mut() {
-            self.deserialize_packed_delta_data(section)?;
+        let (block_storage, block_ranges) = self.read_section_group::<SECTION_SIZE_BLOCKS>(sc)?;
+        for (slot, r) in segment.block_sections.sections[..sc]
+            .iter_mut()
+            .zip(block_ranges)
+        {
+            *slot = PackedDeltaData::from_shared(Arc::clone(&block_storage), r);
         }
-        for section in segment.biome_sections.active_mut() {
-            self.deserialize_packed_delta_data(section)?;
+        let (biome_storage, biome_ranges) = self.read_section_group::<SECTION_SIZE_BIOMES>(sc)?;
+        for (slot, r) in segment.biome_sections.sections[..sc]
+            .iter_mut()
+            .zip(biome_ranges)
+        {
+            *slot = PackedDeltaData::from_shared(Arc::clone(&biome_storage), r);
         }
 
         segment.info = self.deserialize_segment_info()?;

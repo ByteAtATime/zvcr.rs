@@ -18,8 +18,11 @@ pub struct DeltaSections<const UNPACKED_SIZE: usize> {
 
 impl<const UNPACKED_SIZE: usize> DeltaSections<UNPACKED_SIZE> {
     pub fn new(section_count: usize) -> Self {
+        let empty: Arc<Vec<PackedSnapshot<UNPACKED_SIZE>>> = Arc::new(Vec::new());
         Self {
-            sections: std::array::from_fn(|_| PackedDeltaData::default()),
+            sections: std::array::from_fn(|_| {
+                PackedDeltaData::from_shared(Arc::clone(&empty), 0..0)
+            }),
             section_count,
         }
     }

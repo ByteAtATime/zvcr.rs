@@ -170,11 +170,11 @@ mod tests {
                         "block section count mismatch for segment {i}"
                     );
                     for s in 0..a.block_sections.len() {
-                        let orig = a.block_sections[s].reverse_deltas[0].data.unpack();
-                        let dec = b.block_sections[s].reverse_deltas[0].data.unpack();
+                        let orig = a.block_sections[s].snapshots()[0].data.unpack();
+                        let dec = b.block_sections[s].snapshots()[0].data.unpack();
                         assert_eq!(orig, dec, "block section {i}/{s} mismatch");
-                        let orig_biome = a.biome_sections[s].reverse_deltas[0].data.unpack();
-                        let dec_biome = b.biome_sections[s].reverse_deltas[0].data.unpack();
+                        let orig_biome = a.biome_sections[s].snapshots()[0].data.unpack();
+                        let dec_biome = b.biome_sections[s].snapshots()[0].data.unpack();
                         assert_eq!(orig_biome, dec_biome, "biome section {i}/{s} mismatch");
                     }
                 }

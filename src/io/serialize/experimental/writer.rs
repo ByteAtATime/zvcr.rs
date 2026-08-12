@@ -53,8 +53,9 @@ impl WriteHandle {
         &mut self,
         delta_data: &PackedDeltaData<N>,
     ) {
-        put_u64_le(&mut self.data, delta_data.reverse_deltas.len() as u64);
-        for snapshot in &delta_data.reverse_deltas {
+        let snapshots = delta_data.snapshots();
+        put_u64_le(&mut self.data, snapshots.len() as u64);
+        for snapshot in snapshots {
             self.serialize_snapshot(snapshot);
         }
     }

@@ -16,7 +16,7 @@ use crate::region::tile_entities::*;
 use crate::version::*;
 use bytes::Bytes;
 use std::fs;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -162,45 +162,54 @@ impl ReadHandle {
         })
     }
 
-    pub(crate) fn deserialize_packed_delta_data<const UNPACKED_SIZE: usize>(
-        &mut self,
-        deltas: &mut PackedDeltaData<UNPACKED_SIZE>,
-        palette_table: &[Palette],
-    ) -> Result<(), ReadError> {
-        let delta_length = self.read_u64()?;
-        if delta_length > MAX_DELTA_LENGTH {
+    pub(crate) fn skip_packed_snapshot(&mut self) -> Result<(), ReadError> {
+        let _timestamp = self.read_u64()?;
+        let data_type = self.read_u8()?;
+        if data_type == 0 {
+            let _single_val = self.read_u16()?;
+            return Ok(());
+        }
+
+        let packed_length = self.read_u64()?;
+        if packed_length > MAX_PACKED_LENGTH {
             return Err(ReadError::LengthExceeded(
-                "Delta length too high".to_string(),
+                "Packed length invalid".to_string(),
             ));
         }
-
-        deltas.reverse_deltas.resize(
-            delta_length as usize,
-            PackedSnapshot {
-                data: PackedData {
-                    data: Data::Single(0),
-                },
-                timestamp: 0,
-            },
-        );
-
-        for delta_index in 0..delta_length as usize {
-            if self.max_deltas != 0 && delta_index >= self.max_deltas {
-                let _ts = self.read_u64()?;
-                let dtype = self.read_u8()?;
-                if dtype == 0 {
-                    let _s = self.read_u16()?;
-                } else {
-                    let plen = self.read_u64()?;
-                    self.pos += (plen * 8) as usize;
-                    let _pindex = self.read_u32()?;
-                }
-                continue;
-            }
-            deltas.reverse_deltas[delta_index] =
-                self.deserialize_packed_snapshot_value(palette_table)?;
-        }
+        self.skip(packed_length as usize * 8)?;
+        let _palette_index = self.read_u32()?;
         Ok(())
+    }
+
+    pub(crate) fn read_section_group<const N: usize>(
+        &mut self,
+        section_count: usize,
+        palette_table: &[Palette],
+    ) -> Result<(Arc<Vec<PackedSnapshot<N>>>, Vec<Range<usize>>), ReadError> {
+        let mut shared: Vec<PackedSnapshot<N>> = Vec::new();
+        let mut ranges: Vec<Range<usize>> = Vec::with_capacity(section_count);
+
+        for _ in 0..section_count {
+            let start = shared.len();
+            let delta_length_raw = self.read_u64()?;
+            if delta_length_raw > MAX_DELTA_LENGTH {
+                return Err(ReadError::LengthExceeded(
+                    "Delta length too high".to_string(),
+                ));
+            }
+            let delta_length = delta_length_raw as usize;
+            shared.reserve(delta_length);
+            for delta_index in 0..delta_length {
+                if self.max_deltas != 0 && delta_index >= self.max_deltas {
+                    self.skip_packed_snapshot()?;
+                    continue;
+                }
+                shared.push(self.deserialize_packed_snapshot_value::<N>(palette_table)?);
+            }
+            ranges.push(start..shared.len());
+        }
+
+        Ok((Arc::new(shared), ranges))
     }
 
     pub(crate) fn deserialize_segment_state(&mut self) -> Result<SegmentState, ReadError> {
@@ -295,13 +304,24 @@ impl ReadHandle {
         block_tables: &[Palette],
         biome_tables: &[Palette],
     ) -> Result<Arc<Segment>, ReadError> {
-        let mut segment = Segment::with_section_count(self.ctx.section_count);
+        let sc = self.ctx.section_count;
+        let mut segment = Segment::with_section_count(sc);
 
-        for section in segment.block_sections.active_mut() {
-            self.deserialize_packed_delta_data(section, block_tables)?;
+        let (block_storage, block_ranges) =
+            self.read_section_group::<SECTION_SIZE_BLOCKS>(sc, block_tables)?;
+        for (slot, r) in segment.block_sections.sections[..sc]
+            .iter_mut()
+            .zip(block_ranges)
+        {
+            *slot = PackedDeltaData::from_shared(Arc::clone(&block_storage), r);
         }
-        for section in segment.biome_sections.active_mut() {
-            self.deserialize_packed_delta_data(section, biome_tables)?;
+        let (biome_storage, biome_ranges) =
+            self.read_section_group::<SECTION_SIZE_BIOMES>(sc, biome_tables)?;
+        for (slot, r) in segment.biome_sections.sections[..sc]
+            .iter_mut()
+            .zip(biome_ranges)
+        {
+            *slot = PackedDeltaData::from_shared(Arc::clone(&biome_storage), r);
         }
 
         segment.info = self.deserialize_segment_info()?;
@@ -398,21 +418,20 @@ impl ReadHandle {
         biome_tables: &[Palette],
     ) -> Result<SegmentData, ReadError> {
         let sc = self.ctx.section_count;
-        let mut block_sections: Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>> = Vec::with_capacity(sc);
-        for _ in 0..sc {
-            block_sections.push(PackedDeltaData::default());
-        }
-        for section in block_sections.iter_mut() {
-            self.deserialize_packed_delta_data(section, block_tables)?;
-        }
 
-        let mut biome_sections: Vec<PackedDeltaData<SECTION_SIZE_BIOMES>> = Vec::with_capacity(sc);
-        for _ in 0..sc {
-            biome_sections.push(PackedDeltaData::default());
-        }
-        for section in biome_sections.iter_mut() {
-            self.deserialize_packed_delta_data(section, biome_tables)?;
-        }
+        let (block_storage, block_ranges) =
+            self.read_section_group::<SECTION_SIZE_BLOCKS>(sc, block_tables)?;
+        let block_sections: Vec<PackedDeltaData<SECTION_SIZE_BLOCKS>> = block_ranges
+            .into_iter()
+            .map(|r| PackedDeltaData::from_shared(Arc::clone(&block_storage), r))
+            .collect();
+
+        let (biome_storage, biome_ranges) =
+            self.read_section_group::<SECTION_SIZE_BIOMES>(sc, biome_tables)?;
+        let biome_sections: Vec<PackedDeltaData<SECTION_SIZE_BIOMES>> = biome_ranges
+            .into_iter()
+            .map(|r| PackedDeltaData::from_shared(Arc::clone(&biome_storage), r))
+            .collect();
 
         let info = self.deserialize_segment_info()?;
         let tile_entities = self.deserialize_tile_entities()?;

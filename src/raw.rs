@@ -16,7 +16,7 @@ pub type SectionHistory<T> = Vec<Snapshot<T>>;
 pub fn reconstruct_history<const N: usize>(
     packed: &PackedDeltaData<N>,
 ) -> SectionHistory<[u16; N]> {
-    let deltas = &packed.reverse_deltas;
+    let deltas = packed.snapshots();
     if deltas.is_empty() {
         return Vec::new();
     }
