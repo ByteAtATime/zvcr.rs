@@ -5,7 +5,8 @@ pub trait Reader {
     fn from_bytes(&self, bytes: &[u8]) -> Result<RegionData, String>;
 
     fn read(&self, src: &Path) -> Result<RegionData, String> {
-        let bytes = std::fs::read(src).map_err(|e| format!("Failed to read file from disk: {e}"))?;
+        let bytes =
+            std::fs::read(src).map_err(|e| format!("Failed to read file from disk: {e}"))?;
         self.from_bytes(&bytes)
     }
 }

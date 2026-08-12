@@ -1,8 +1,8 @@
+use super::File;
 use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
-use super::File;
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::io::serialize::primitives::ByteCursor;
@@ -14,9 +14,9 @@ use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use crate::version::*;
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::Arc;
-use std::ops::{Deref, DerefMut};
 
 pub(crate) struct ReadHandle {
     pub(crate) ctx: Context,
@@ -76,7 +76,10 @@ impl ReadHandle {
         Ok(dim)
     }
 
-    pub(crate) fn deserialize_palette_table(&mut self, table: &mut Vec<Palette>) -> Result<(), ReadError> {
+    pub(crate) fn deserialize_palette_table(
+        &mut self,
+        table: &mut Vec<Palette>,
+    ) -> Result<(), ReadError> {
         let len = self.read_u32()?;
         if len > MAX_PALETTE_TABLE_LENGTH {
             return Err(ReadError::LengthExceeded(

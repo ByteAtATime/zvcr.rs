@@ -1,6 +1,4 @@
-use crate::definitions::{
-    SECTION_SIZE_BLOCKS, SECTION_SIZE_BIOMES, SEGMENTS_PER_REGION,
-};
+use crate::definitions::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
 use crate::dimension::DimensionType;
 pub use crate::region::delta::PackedDeltaData;
 use crate::region::segment_info::SegmentState;

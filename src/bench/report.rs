@@ -34,9 +34,9 @@ pub(super) fn reporter(progress: Arc<Progress>, stop: Arc<AtomicBool>) {
         };
         write!(
             stdout,
-            "\r\x1B[K[{done}/{total}] failed={failed} | {} processed | {mbps:.1} MB/s | {} voxel/s | ETA: {}",
+            "\r\x1B[K[{done}/{total}] failed={failed} | {} processed | {mbps:.1} MB/s | {} | ETA: {}",
             format_bytes(bytes_in),
-            format_rate(vps),
+            format_rate(vps, "voxel"),
             format_duration(Duration::from_secs_f64(eta))
         )
         .ok();
@@ -124,8 +124,8 @@ fn phase_line(label: &str, input_bytes: u64, voxels: u64, ns: u128) -> String {
         let mbps = (input_bytes as f64 / (ns as f64 / 1e9)) / 1e6;
         let vps = voxels as f64 / (ns as f64 / 1e9);
         format!(
-            "{label} {mbps:>5.1} MB/s | {} voxel/s ({agg_ms:.0} ms aggregate)",
-            format_rate(vps)
+            "{label} {mbps:>5.1} MB/s | {} ({agg_ms:.0} ms aggregate)",
+            format_rate(vps, "voxel")
         )
     }
 }

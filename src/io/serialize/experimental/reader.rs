@@ -1,8 +1,8 @@
+use super::File;
 use crate::definitions::SEGMENTS_PER_REGION;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
-use super::File;
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::io::serialize::primitives::ByteCursor;
@@ -13,9 +13,9 @@ use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use crate::version::*;
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::Arc;
-use std::ops::{Deref, DerefMut};
 
 pub(crate) struct ReadHandle {
     pub(crate) ctx: Context,
@@ -78,9 +78,8 @@ impl ReadHandle {
         }
         let byte_len = N * std::mem::size_of::<u16>();
         {
-            let byte_slice = unsafe {
-                std::slice::from_raw_parts_mut(atoms.as_mut_ptr() as *mut u8, byte_len)
-            };
+            let byte_slice =
+                unsafe { std::slice::from_raw_parts_mut(atoms.as_mut_ptr() as *mut u8, byte_len) };
             self.read_exact(byte_slice)?;
         }
         #[cfg(not(target_endian = "little"))]
