@@ -1,4 +1,5 @@
 use crate::io::serialize::error::ReadError;
+use bytes::Bytes;
 
 pub(crate) fn put_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
@@ -16,31 +17,40 @@ pub(crate) fn put_u64_le(buf: &mut Vec<u8>, v: u64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-pub(crate) fn put_u64_le_slice(buf: &mut Vec<u8>, slice: &[u64]) {
-    let byte_len = std::mem::size_of_val(slice);
-    buf.reserve(byte_len);
-    #[cfg(target_endian = "little")]
-    buf.extend_from_slice(unsafe {
-        std::slice::from_raw_parts(slice.as_ptr() as *const u8, byte_len)
-    });
-    #[cfg(not(target_endian = "little"))]
-    for &v in slice {
-        buf.extend_from_slice(&v.to_le_bytes());
-    }
-}
-
 pub(crate) fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
     buf.extend_from_slice(v);
 }
 
+#[cfg(not(target_endian = "little"))]
+compile_error!("only little-endian targets are supported");
+
 pub(crate) struct ByteCursor {
-    pub(crate) data: Vec<u8>,
+    pub(crate) data: Bytes,
     pub(crate) pos: usize,
 }
 
 impl ByteCursor {
-    pub(crate) fn new(data: Vec<u8>) -> Self {
+    pub(crate) fn new(data: Bytes) -> Self {
         Self { data, pos: 0 }
+    }
+
+    #[inline]
+    pub(crate) fn take_slice(&mut self, n: usize) -> Result<Bytes, ReadError> {
+        if self.pos + n > self.data.len() {
+            return Err(ReadError::OutOfBounds { offset: self.pos });
+        }
+        let slice = self.data.slice(self.pos..self.pos + n);
+        self.pos += n;
+        Ok(slice)
+    }
+
+    #[inline]
+    pub(crate) fn skip(&mut self, n: usize) -> Result<(), ReadError> {
+        if self.pos + n > self.data.len() {
+            return Err(ReadError::OutOfBounds { offset: self.pos });
+        }
+        self.pos += n;
+        Ok(())
     }
 
     #[inline]

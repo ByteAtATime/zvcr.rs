@@ -17,30 +17,6 @@ struct CachedCompressor {
 thread_local! {
     static ZSTD_COMPRESSOR: RefCell<Option<CachedCompressor>> = const { RefCell::new(None) };
     static ZSTD_DECOMPRESSOR: RefCell<Option<Decompressor<'static>>> = const { RefCell::new(None) };
-    static BUFFER_POOL: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
-}
-
-pub(crate) fn take_buffer(min_cap: usize) -> Vec<u8> {
-    BUFFER_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        if let Some(idx) = pool.iter().position(|b| b.capacity() >= min_cap) {
-            pool.swap_remove(idx)
-        } else {
-            Vec::with_capacity(min_cap)
-        }
-    })
-}
-
-pub(crate) fn return_buffer(mut buf: Vec<u8>) {
-    if buf.capacity() >= 1 << 20 {
-        buf.clear();
-        BUFFER_POOL.with(|pool| {
-            let mut pool = pool.borrow_mut();
-            if pool.len() < 4 {
-                pool.push(buf);
-            }
-        });
-    }
 }
 
 pub fn default_compression_threads() -> u32 {
@@ -89,9 +65,7 @@ pub fn decompress_zstd(input: &[u8]) -> Result<Vec<u8>, String> {
             .and_then(|sz| usize::try_from(sz).ok());
 
         let cap = content_size.unwrap_or(0);
-        let mut decompressed = take_buffer(cap);
-        decompressed.clear();
-        decompressed.reserve(cap);
+        let mut decompressed = vec![0u8; cap];
 
         if content_size.is_some() {
             if guard.is_none() {

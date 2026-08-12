@@ -4,9 +4,15 @@ pub(crate) mod writer;
 
 pub(crate) use file::File;
 
+use crate::dimension::DimensionType;
+use crate::io::compression::decompress_zstd;
+use crate::io::file_location::EXTENSION;
+use crate::io::serialize::context::Context;
+use crate::io::serialize::error::ReadError;
 use crate::io::serialize::types::{Reader, Writer};
 use crate::raw::RegionData;
 use crate::region::segment::Region;
+use crate::version::{Version, ZVCR3D_LATEST_VERSION};
 use std::sync::Arc;
 
 use self::reader::ReadHandle;
@@ -51,10 +57,51 @@ impl ReferenceReader {
 
 impl Reader for ReferenceReader {
     fn from_bytes(&self, bytes: &[u8]) -> Result<RegionData, String> {
-        let mut handle = ReadHandle::new(bytes.to_vec(), self.max_deltas);
-        handle
-            .deserialize_to_region_data()
-            .map_err(|e| e.to_string())
+        let header_len = EXTENSION.len() + 4;
+        if bytes.len() < header_len {
+            return Err(ReadError::OutOfBounds {
+                offset: bytes.len(),
+            }
+            .to_string());
+        }
+        if &bytes[..EXTENSION.len()] != EXTENSION.as_bytes() {
+            return Err(ReadError::HeaderMismatch.to_string());
+        }
+        let version_num = bytes[EXTENSION.len()];
+        if version_num > ZVCR3D_LATEST_VERSION as u8 {
+            return Err(ReadError::InvalidVersion(version_num).to_string());
+        }
+        let version = Version::from_u8(version_num)
+            .ok_or(ReadError::InvalidVersion(version_num))
+            .map_err(|e| e.to_string())?;
+        let dim_num = bytes[EXTENSION.len() + 1];
+        let dimension = DimensionType::from_u8(dim_num)
+            .ok_or(ReadError::InvalidDimensionType(dim_num))
+            .map_err(|e| e.to_string())?;
+        let protocol_version =
+            u16::from_le_bytes([bytes[EXTENSION.len() + 2], bytes[EXTENSION.len() + 3]]);
+
+        let mut ctx = Context::default();
+        ctx.initialize_section_count(dimension);
+        ctx.protocol_version = protocol_version;
+
+        let uncompressed =
+            decompress_zstd(&bytes[header_len..]).map_err(|e| ReadError::Zstd(e).to_string())?;
+
+        let mut region_handle = ReadHandle::new(bytes::Bytes::from(uncompressed), self.max_deltas);
+        region_handle.ctx = ctx;
+
+        let mut rd = RegionData {
+            version,
+            protocol_version,
+            dimension,
+            segments: std::array::from_fn(|_| None),
+        };
+
+        region_handle
+            .deserialize_region_data(&mut rd)
+            .map_err(|e| e.to_string())?;
+        Ok(rd)
     }
 }
 

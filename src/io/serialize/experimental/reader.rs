@@ -37,7 +37,7 @@ impl DerefMut for ReadHandle {
 }
 
 impl ReadHandle {
-    pub(crate) fn new(data: Vec<u8>, max_deltas: usize) -> Self {
+    pub(crate) fn new(data: bytes::Bytes, max_deltas: usize) -> Self {
         Self {
             ctx: Context::default(),
             cursor: ByteCursor::new(data),
@@ -81,10 +81,6 @@ impl ReadHandle {
             let byte_slice =
                 unsafe { std::slice::from_raw_parts_mut(atoms.as_mut_ptr() as *mut u8, byte_len) };
             self.read_exact(byte_slice)?;
-        }
-        #[cfg(not(target_endian = "little"))]
-        for atom in atoms.iter_mut() {
-            *atom = u16::from_le(*atom);
         }
         Ok(atoms)
     }
@@ -262,7 +258,7 @@ impl ReadHandle {
         let compressed_slice = &self.data[self.pos..];
         let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
 
-        let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
+        let mut region_handle = ReadHandle::new(bytes::Bytes::from(uncompressed), self.max_deltas);
         region_handle.ctx = self.ctx.clone();
 
         let mut file = File {
@@ -273,7 +269,6 @@ impl ReadHandle {
         };
 
         region_handle.deserialize_region(&mut file.region)?;
-        crate::io::compression::return_buffer(std::mem::take(&mut region_handle.data));
         Ok(file)
     }
 }
@@ -281,7 +276,7 @@ impl ReadHandle {
 #[allow(dead_code)]
 pub(crate) fn read_file(filepath: &Path, max_deltas: usize) -> Result<File, ReadError> {
     let buffer = fs::read(filepath).map_err(|e| ReadError::FileNotFound(e.to_string()))?;
-    let mut handle = ReadHandle::new(buffer, max_deltas);
+    let mut handle = ReadHandle::new(bytes::Bytes::from(buffer), max_deltas);
     handle.deserialize_file()
 }
 

@@ -1,8 +1,22 @@
 use crate::definitions::*;
-use crate::region::palette::{Palette, PackScratch, build_palette_with};
+use crate::region::palette::{PackScratch, Palette, build_palette_with};
 use crate::region::unpacked_view::UnpackedData;
 
-pub type LongArray = Vec<u64>;
+pub type LongArray = bytes::Bytes;
+
+fn vec_u64_to_bytes(v: Vec<u64>) -> bytes::Bytes {
+    let len = v.len() * 8;
+    let capacity = v.capacity() * 8;
+    let mut v = std::mem::ManuallyDrop::new(v);
+    let bytes: Vec<u8> = unsafe { Vec::from_raw_parts(v.as_mut_ptr() as *mut u8, len, capacity) };
+    bytes::Bytes::from(bytes)
+}
+
+fn packed_u64_iter(bytes: &[u8]) -> impl Iterator<Item = u64> + '_ {
+    bytes
+        .chunks_exact(8)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PalettedData<const UNPACKED_SIZE: usize> {
@@ -15,7 +29,7 @@ impl<const UNPACKED_SIZE: usize> PalettedData<UNPACKED_SIZE> {
         let values_per_long = 64 / palette.bits_per_entry;
         let packed_length = UNPACKED_SIZE.div_ceil(values_per_long);
         Self {
-            packed_long_array: vec![0; packed_length],
+            packed_long_array: vec_u64_to_bytes(vec![0; packed_length]),
             palette,
         }
     }
@@ -70,7 +84,7 @@ fn unpack_bits<const BITS: u8, const UNPACKED_SIZE: usize>(
     let mask = (1u64 << BITS) - 1;
     let mut unpacked_index = 0;
 
-    for &cell in &paletted_data.packed_long_array {
+    for cell in packed_u64_iter(&paletted_data.packed_long_array) {
         let mut bit_index = 0u8;
         while bit_index < 64 {
             if unpacked_index >= UNPACKED_SIZE {
@@ -98,7 +112,7 @@ fn merge_bits<const BITS: u8, const UNPACKED_SIZE: usize>(
     let mask = (1u64 << BITS) - 1;
     let mut unpacked_index = 0;
 
-    for &cell in &paletted_data.packed_long_array {
+    for cell in packed_u64_iter(&paletted_data.packed_long_array) {
         let mut bit_index = 0u8;
         while bit_index < 64 {
             if unpacked_index >= UNPACKED_SIZE {
@@ -137,58 +151,38 @@ impl<const UNPACKED_SIZE: usize> PackedData<UNPACKED_SIZE> {
 
         let bits = palette.bits_per_entry as u8;
         let direct = palette.direct();
-        let mut paletted_data = PalettedData::new(palette);
+        let values_per_long = 64 / palette.bits_per_entry;
+        let packed_length = UNPACKED_SIZE.div_ceil(values_per_long);
+        let mut packed = vec![0u64; packed_length];
 
         match bits {
-            1 => pack_bits::<1, UNPACKED_SIZE>(
-                section_data,
-                direct,
-                &scratch.indices,
-                &mut paletted_data.packed_long_array,
-            ),
-            2 => pack_bits::<2, UNPACKED_SIZE>(
-                section_data,
-                direct,
-                &scratch.indices,
-                &mut paletted_data.packed_long_array,
-            ),
-            4 => pack_bits::<4, UNPACKED_SIZE>(
-                section_data,
-                direct,
-                &scratch.indices,
-                &mut paletted_data.packed_long_array,
-            ),
-            8 => pack_bits::<8, UNPACKED_SIZE>(
-                section_data,
-                direct,
-                &scratch.indices,
-                &mut paletted_data.packed_long_array,
-            ),
-            _ => pack_bits::<16, UNPACKED_SIZE>(
-                section_data,
-                direct,
-                &scratch.indices,
-                &mut paletted_data.packed_long_array,
-            ),
+            1 => pack_bits::<1, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
+            2 => pack_bits::<2, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
+            4 => pack_bits::<4, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
+            8 => pack_bits::<8, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
+            _ => {
+                pack_bits::<16, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed)
+            }
         }
 
         Self {
-            data: Data::Paletted(paletted_data),
+            data: Data::Paletted(PalettedData {
+                packed_long_array: vec_u64_to_bytes(packed),
+                palette,
+            }),
         }
     }
 
     pub fn unpack(&self) -> UnpackedData<UNPACKED_SIZE> {
         match &self.data {
             Data::Single(atom) => [*atom; UNPACKED_SIZE],
-            Data::Paletted(paletted_data) => {
-                match paletted_data.palette.bits_per_entry as u8 {
-                    1 => unpack_bits::<1, UNPACKED_SIZE>(paletted_data),
-                    2 => unpack_bits::<2, UNPACKED_SIZE>(paletted_data),
-                    4 => unpack_bits::<4, UNPACKED_SIZE>(paletted_data),
-                    8 => unpack_bits::<8, UNPACKED_SIZE>(paletted_data),
-                    _ => unpack_bits::<16, UNPACKED_SIZE>(paletted_data),
-                }
-            }
+            Data::Paletted(paletted_data) => match paletted_data.palette.bits_per_entry as u8 {
+                1 => unpack_bits::<1, UNPACKED_SIZE>(paletted_data),
+                2 => unpack_bits::<2, UNPACKED_SIZE>(paletted_data),
+                4 => unpack_bits::<4, UNPACKED_SIZE>(paletted_data),
+                8 => unpack_bits::<8, UNPACKED_SIZE>(paletted_data),
+                _ => unpack_bits::<16, UNPACKED_SIZE>(paletted_data),
+            },
         }
     }
 
@@ -199,15 +193,13 @@ impl<const UNPACKED_SIZE: usize> PackedData<UNPACKED_SIZE> {
                     grid.fill(*atom);
                 }
             }
-            Data::Paletted(paletted_data) => {
-                match paletted_data.palette.bits_per_entry as u8 {
-                    1 => merge_bits::<1, UNPACKED_SIZE>(paletted_data, grid),
-                    2 => merge_bits::<2, UNPACKED_SIZE>(paletted_data, grid),
-                    4 => merge_bits::<4, UNPACKED_SIZE>(paletted_data, grid),
-                    8 => merge_bits::<8, UNPACKED_SIZE>(paletted_data, grid),
-                    _ => merge_bits::<16, UNPACKED_SIZE>(paletted_data, grid),
-                }
-            }
+            Data::Paletted(paletted_data) => match paletted_data.palette.bits_per_entry as u8 {
+                1 => merge_bits::<1, UNPACKED_SIZE>(paletted_data, grid),
+                2 => merge_bits::<2, UNPACKED_SIZE>(paletted_data, grid),
+                4 => merge_bits::<4, UNPACKED_SIZE>(paletted_data, grid),
+                8 => merge_bits::<8, UNPACKED_SIZE>(paletted_data, grid),
+                _ => merge_bits::<16, UNPACKED_SIZE>(paletted_data, grid),
+            },
         }
     }
 }

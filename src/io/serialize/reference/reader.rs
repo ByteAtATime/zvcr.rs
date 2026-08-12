@@ -14,6 +14,7 @@ use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use crate::version::*;
+use bytes::Bytes;
 use std::fs;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
@@ -39,7 +40,7 @@ impl DerefMut for ReadHandle {
 }
 
 impl ReadHandle {
-    pub(crate) fn new(data: Vec<u8>, max_deltas: usize) -> Self {
+    pub(crate) fn new(data: Bytes, max_deltas: usize) -> Self {
         Self {
             ctx: Context::default(),
             cursor: ByteCursor::new(data),
@@ -111,20 +112,21 @@ impl ReadHandle {
         Ok(())
     }
 
-    pub(crate) fn deserialize_packed_snapshot<const UNPACKED_SIZE: usize>(
+    pub(crate) fn deserialize_packed_snapshot_value<const UNPACKED_SIZE: usize>(
         &mut self,
-        snapshot: &mut PackedSnapshot<UNPACKED_SIZE>,
         palette_table: &[Palette],
-    ) -> Result<(), ReadError> {
-        snapshot.timestamp = self.read_u64()? as i64;
+    ) -> Result<PackedSnapshot<UNPACKED_SIZE>, ReadError> {
+        let timestamp = self.read_u64()? as i64;
         let data_type = self.read_u8()?;
 
         if data_type == 0 {
             let single_val = self.read_u16()?;
-            snapshot.data = PackedData {
-                data: Data::Single(single_val),
-            };
-            return Ok(());
+            return Ok(PackedSnapshot {
+                data: PackedData {
+                    data: Data::Single(single_val),
+                },
+                timestamp,
+            });
         }
 
         let packed_length = self.read_u64()?;
@@ -134,23 +136,7 @@ impl ReadHandle {
             ));
         }
 
-        let packed_len = packed_length as usize;
-        let mut packed_longs: Vec<u64> = vec![0u64; packed_len];
-        {
-            let byte_slice = unsafe {
-                std::slice::from_raw_parts_mut(
-                    packed_longs.as_mut_ptr() as *mut u8,
-                    packed_len * std::mem::size_of::<u64>(),
-                )
-            };
-            self.read_exact(byte_slice)?;
-        }
-        #[cfg(not(target_endian = "little"))]
-        {
-            for v in packed_longs.iter_mut() {
-                *v = v.to_le();
-            }
-        }
+        let packed_bytes = self.take_slice(packed_length as usize * 8)?;
 
         let palette_index = self.read_u32()?;
         let palette = if palette_index == u32::MAX {
@@ -165,13 +151,15 @@ impl ReadHandle {
             palette_table[palette_index as usize].clone()
         };
 
-        snapshot.data = PackedData {
-            data: Data::Paletted(PalettedData {
-                packed_long_array: packed_longs,
-                palette,
-            }),
-        };
-        Ok(())
+        Ok(PackedSnapshot {
+            data: PackedData {
+                data: Data::Paletted(PalettedData {
+                    packed_long_array: packed_bytes,
+                    palette,
+                }),
+            },
+            timestamp,
+        })
     }
 
     pub(crate) fn deserialize_packed_delta_data<const UNPACKED_SIZE: usize>(
@@ -209,10 +197,8 @@ impl ReadHandle {
                 }
                 continue;
             }
-            self.deserialize_packed_snapshot(
-                &mut deltas.reverse_deltas[delta_index],
-                palette_table,
-            )?;
+            deltas.reverse_deltas[delta_index] =
+                self.deserialize_packed_snapshot_value(palette_table)?;
         }
         Ok(())
     }
@@ -350,7 +336,7 @@ impl ReadHandle {
         let compressed_slice = &self.data[self.pos..];
         let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
 
-        let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
+        let mut region_handle = ReadHandle::new(bytes::Bytes::from(uncompressed), self.max_deltas);
         region_handle.ctx = self.ctx.clone();
 
         let mut file = File {
@@ -361,10 +347,10 @@ impl ReadHandle {
         };
 
         region_handle.deserialize_region(&mut file.region)?;
-        crate::io::compression::return_buffer(std::mem::take(&mut region_handle.data));
         Ok(file)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn deserialize_to_region_data(&mut self) -> Result<RegionData, ReadError> {
         self.validate_file_prefix(EXTENSION)?;
         let version = self.deserialize_version(ZVCR3D_LATEST_VERSION)?;
@@ -376,7 +362,7 @@ impl ReadHandle {
         let compressed_slice = &self.data[self.pos..];
         let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
 
-        let mut region_handle = ReadHandle::new(uncompressed, self.max_deltas);
+        let mut region_handle = ReadHandle::new(bytes::Bytes::from(uncompressed), self.max_deltas);
         region_handle.ctx = self.ctx.clone();
 
         let mut rd = RegionData {
@@ -387,7 +373,6 @@ impl ReadHandle {
         };
 
         region_handle.deserialize_region_data(&mut rd)?;
-        crate::io::compression::return_buffer(std::mem::take(&mut region_handle.data));
         Ok(rd)
     }
 
@@ -444,7 +429,7 @@ impl ReadHandle {
 #[allow(dead_code)]
 pub(crate) fn read_file(filepath: &Path, max_deltas: usize) -> Result<File, ReadError> {
     let buffer = fs::read(filepath).map_err(|e| ReadError::FileNotFound(e.to_string()))?;
-    let mut handle = ReadHandle::new(buffer, max_deltas);
+    let mut handle = ReadHandle::new(bytes::Bytes::from(buffer), max_deltas);
     handle.deserialize_file()
 }
 
