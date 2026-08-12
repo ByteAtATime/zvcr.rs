@@ -123,6 +123,16 @@ impl BitChance {
     }
 
     #[inline]
+    pub(crate) fn prob(&self) -> u16 {
+        self.p
+    }
+
+    #[inline]
+    pub(crate) fn set_prob(&mut self, p: u16) {
+        self.p = p;
+    }
+
+    #[inline]
     pub(crate) fn record_bit(
         &mut self,
         recs: &mut Vec<BitRec>,
@@ -158,7 +168,7 @@ impl BitChance {
     }
 
     #[inline]
-    fn update(&mut self, bit: u32, limit: u32, delta: u32) {
+    pub(crate) fn update(&mut self, bit: u32, limit: u32, delta: u32) {
         if (self.count as u32) < limit {
             self.count += 1;
         }
@@ -173,6 +183,15 @@ impl BitChance {
         };
         self.p = new_p.clamp(1, ANS_M - 1) as u16;
     }
+}
+
+pub(crate) fn saturated_zero_step(p: u16) -> u16 {
+    let mut chance = BitChance {
+        p,
+        count: ZERO_LIMIT as u8,
+    };
+    chance.update(0, ZERO_LIMIT, ZERO_DELTA);
+    chance.p
 }
 
 pub(crate) struct NzCoder {

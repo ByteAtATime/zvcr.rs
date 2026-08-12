@@ -2,7 +2,7 @@ use crate::definitions::*;
 use crate::dimension::DimensionType;
 use crate::io::compression::decompress_zstd;
 use crate::io::file_location::{EXTENSION, RegionLocation};
-use super::coder::context::ContextCodec;
+use super::coder::context::{read_varint, ContextCodec};
 use super::File;
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
@@ -352,15 +352,24 @@ impl ReadHandle {
         sec_idx: usize,
         active: bool,
     ) -> Result<(), ReadError> {
-        let ans_len = self.read_u32()? as usize;
+        let body_len = self.read_u32()? as usize;
 
         if !active {
-            self.pos += ans_len;
+            self.pos += body_len;
             return Ok(());
         }
 
-        let mut ans_bytes = vec![0u8; ans_len];
-        self.read_exact(&mut ans_bytes)?;
+        let mut body = vec![0u8; body_len];
+        self.read_exact(&mut body)?;
+
+        let (num_runs, mut pos) = read_varint(&body, 0).map_err(ReadError::Generic)?;
+        let mut runs = Vec::with_capacity(num_runs as usize);
+        for _ in 0..num_runs {
+            let (start, p) = read_varint(&body, pos).map_err(ReadError::Generic)?;
+            let (len, p) = read_varint(&body, p).map_err(ReadError::Generic)?;
+            runs.push((start as u16, len as u16));
+            pos = p;
+        }
 
         let palette_atoms: Vec<u16> = match &snapshot.data.data {
             Data::Paletted(paletted) => paletted.palette.palette.iter().copied().collect(),
@@ -368,7 +377,7 @@ impl ReadHandle {
         };
 
         let blocks = codec
-            .decode_section(&ans_bytes, &palette_atoms, cx, cz, sec_idx)
+            .decode_section(&body[pos..], &runs, &palette_atoms, cx, cz, sec_idx)
             .map_err(ReadError::Generic)?;
 
         snapshot.data = PackedData::pack_with(&blocks, &mut self.pack_scratch);
