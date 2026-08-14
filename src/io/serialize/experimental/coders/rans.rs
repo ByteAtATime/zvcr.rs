@@ -50,6 +50,15 @@ impl RansEncoder {
         }
     }
 
+    #[inline]
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            x: L,
+            bytes: Vec::with_capacity(2 * n + 16),
+        }
+    }
+
+    #[inline]
     pub fn put(&mut self, freq: u32, start: u32) {
         debug_assert!(freq > 0 && start + freq <= M && start < M);
         let x_max = X_MAX_BASE * freq;
@@ -66,6 +75,7 @@ impl RansEncoder {
         self.x = (q << PRECISION_BITS) + r + start;
     }
 
+    #[inline]
     pub fn finish(mut self) -> Vec<u8> {
         self.bytes.reverse();
         let mut out = Vec::with_capacity(4 + self.bytes.len());
@@ -88,10 +98,12 @@ impl<'a> RansDecoder<'a> {
         Self { x, body, ip: 4 }
     }
 
+    #[inline]
     pub fn slot(&self) -> u32 {
         self.x & (M - 1)
     }
 
+    #[inline]
     pub fn advance(&mut self, freq: u32, start: u32) {
         let slot = self.x & (M - 1);
         self.x = freq * (self.x >> PRECISION_BITS) + slot - start;

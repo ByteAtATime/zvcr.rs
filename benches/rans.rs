@@ -22,7 +22,7 @@ fn bench_encode(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(SIZE as u64));
     group.bench_function("encode", |b| {
         b.iter(|| {
-            let mut enc = rans::RansEncoder::new();
+            let mut enc = rans::RansEncoder::with_capacity(SIZE);
             for &b in data.iter().rev() {
                 enc.put(freq[b as usize] as u32, start[b as usize] as u32);
             }
