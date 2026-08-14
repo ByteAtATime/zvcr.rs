@@ -4,24 +4,27 @@ const L: u32 = 1 << 23;
 const X_MAX_BASE: u32 = (L >> 12) << 8;
 
 #[derive(Clone, Copy)]
-struct DivMagic {
-    magic: u32,
+#[repr(C)]
+struct DivEntry {
+    magic32: u32,
     shift: u8,
+    m_sub: u16,
 }
 
-const fn div_magic(d: u32) -> DivMagic {
+const fn div_magic(d: u32) -> DivEntry {
     let l = 31 - d.leading_zeros();
-    if d & (d - 1) == 0 {
-        return DivMagic { magic: 0, shift: (l - 1) as u8 };
-    }
     let pow = 1u128 << (33 + l);
-    let magic = ((pow + d as u128 - 1) / d as u128) as u32;
-    DivMagic { magic, shift: l as u8 }
+    let m = ((pow + d as u128 - 1) / d as u128) as u64;
+    DivEntry {
+        magic32: (m - (1 << 32) - 1) as u32,
+        shift: (33 + l) as u8,
+        m_sub: (M - d) as u16,
+    }
 }
 
-const DIV_TABLE: [DivMagic; M as usize + 1] = {
-    let mut t = [DivMagic { magic: 0, shift: 0 }; M as usize + 1];
-    let mut d = 2;
+const DIV_TABLE: [DivEntry; M as usize + 1] = {
+    let mut t = [DivEntry { magic32: 0, shift: 0, m_sub: 0 }; M as usize + 1];
+    let mut d = 1;
     while d <= M as usize {
         t[d] = div_magic(d as u32);
         d += 1;
@@ -61,18 +64,21 @@ impl RansEncoder {
     #[inline]
     pub fn put(&mut self, freq: u32, start: u32) {
         debug_assert!(freq > 0 && start + freq <= M && start < M);
-        let x_max = X_MAX_BASE * freq;
-        while self.x >= x_max {
-            self.bytes.push((self.x & 0xff) as u8);
+        let entry = DIV_TABLE[freq as usize];
+        let mut q = fast_div(self.x, entry);
+        debug_assert!((q >= X_MAX_BASE) == (self.x >= X_MAX_BASE * freq));
+        if q >= X_MAX_BASE {
+            self.bytes.push(self.x as u8);
             self.x >>= 8;
+            q >>= 8;
+            if q >= X_MAX_BASE {
+                self.bytes.push(self.x as u8);
+                self.x >>= 8;
+                q >>= 8;
+            }
         }
-        let q = if freq > 1 {
-            fast_div(self.x, DIV_TABLE[freq as usize])
-        } else {
-            self.x
-        };
-        let r = self.x - q * freq;
-        self.x = (q << PRECISION_BITS) + r + start;
+        debug_assert!(q == self.x / freq);
+        self.x = self.x + q * (entry.m_sub as u32) + start;
     }
 
     #[inline]
@@ -116,10 +122,9 @@ impl<'a> RansDecoder<'a> {
 }
 
 #[inline(always)]
-fn fast_div(x: u32, d: DivMagic) -> u32 {
-    let q = ((x as u64) * (d.magic as u64) >> 32) as u32;
-    let t = ((x - q) >> 1) + q;
-    t >> d.shift
+fn fast_div(x: u32, d: DivEntry) -> u32 {
+    let m = d.magic32 as u64 + (1u64 << 32) + 1;
+    (((x as u64) * m) >> d.shift) as u32
 }
 
 fn starts(freq: &[u16; 256]) -> [u16; 256] {
@@ -180,7 +185,7 @@ pub fn build_decode_table(freq: &[u16; 256], start: &[u16; 256]) -> Vec<DecEntry
 
 #[cfg(test)]
 mod tests {
-    use super::{DIV_TABLE, L, M, RansDecoder, RansEncoder, build_decode_table, build_freq_table, fast_div};
+    use super::{DIV_TABLE, L, M, RansDecoder, RansEncoder, X_MAX_BASE, build_decode_table, build_freq_table, fast_div};
 
     fn check_streaming(data: &[u8]) {
         let (freq, start) = build_freq_table(data);
@@ -200,32 +205,45 @@ mod tests {
         assert_eq!(out, data);
     }
 
-    #[test]
-    fn fast_div_correct() {
-        for freq in 2u32..=M {
-            let dm = DIV_TABLE[freq as usize];
-            let mut x = L;
-            for _ in 0..1024 {
-                assert_eq!(fast_div(x, dm), x / freq, "freq={freq} x={x}");
-                x = x.wrapping_mul(1103515245).wrapping_add(12345);
-                x = x & 0x7FFFFFFF;
-                if x < L {
-                    x += L;
-                }
+    fn ref_encode(data: &[u8]) -> Vec<u8> {
+        let (freq, start) = build_freq_table(data);
+        let mut x = L;
+        let mut bytes = Vec::new();
+        for &b in data.iter().rev() {
+            let f = freq[b as usize] as u32;
+            let s = start[b as usize] as u32;
+            let x_max = X_MAX_BASE * f;
+            while x >= x_max {
+                bytes.push((x & 0xff) as u8);
+                x >>= 8;
             }
-            assert_eq!(fast_div(0, dm), 0u32);
-            assert_eq!(fast_div(freq, dm), 1u32);
-            assert_eq!(fast_div(freq.wrapping_sub(1), dm), 0u32);
+            let q = x / f;
+            let r = x - q * f;
+            x = (q << super::PRECISION_BITS) + r + s;
         }
+        bytes.reverse();
+        let mut out = Vec::with_capacity(4 + bytes.len());
+        out.extend_from_slice(&x.to_be_bytes());
+        out.extend_from_slice(&bytes);
+        out
     }
 
-    #[test]
-    fn roundtrip_streaming() {
-        check_streaming(b"");
-        check_streaming(b"a");
-        check_streaming(b"ab");
-        check_streaming(b"hello, world!");
-        check_streaming(&(0u8..=255).collect::<Vec<_>>());
+    fn check_byte_identical(data: &[u8]) {
+        let (freq, start) = build_freq_table(data);
+        let mut enc = RansEncoder::new();
+        for &b in data.iter().rev() {
+            enc.put(freq[b as usize] as u32, start[b as usize] as u32);
+        }
+        assert_eq!(enc.finish(), ref_encode(data));
+    }
+
+    fn test_datasets() -> Vec<Vec<u8>> {
+        let mut datasets = Vec::new();
+        datasets.push(b"".to_vec());
+        datasets.push(b"a".to_vec());
+        datasets.push(b"ab".to_vec());
+        datasets.push(b"hello, world!".to_vec());
+        datasets.push((0u8..=255).collect::<Vec<_>>());
         let mut state: u64 = 1;
         let mut data = Vec::with_capacity(64 * 1024);
         for _ in 0..(64 * 1024) {
@@ -234,7 +252,7 @@ mod tests {
             state ^= state << 17;
             data.push((state & 0xff) as u8);
         }
-        check_streaming(&data);
+        datasets.push(data);
         let mut skewed: u64 = 1;
         let mut skewed_data = Vec::with_capacity(128 * 1024);
         for _ in 0..(128 * 1024) {
@@ -247,7 +265,56 @@ mod tests {
                 skewed_data.push(b'a');
             }
         }
-        check_streaming(&skewed_data);
-        check_streaming(&vec![b'x'; 100_000]);
+        datasets.push(skewed_data);
+        datasets.push(vec![b'x'; 100_000]);
+        datasets
+    }
+
+    #[test]
+    fn fast_div_correct() {
+        for freq in 1u32..=M {
+            let entry = DIV_TABLE[freq as usize];
+            let mut x = L;
+            for _ in 0..1024 {
+                assert_eq!(fast_div(x, entry), x / freq, "freq={freq} x={x}");
+                x = x.wrapping_mul(1103515245).wrapping_add(12345);
+                x = x & 0x7FFFFFFF;
+                if x < L {
+                    x += L;
+                }
+            }
+            assert_eq!(fast_div(0, entry), 0u32);
+            assert_eq!(fast_div(freq, entry), 1u32);
+            assert_eq!(fast_div(freq.wrapping_sub(1), entry), 0u32);
+            let base = L - (L % freq);
+            assert_eq!(fast_div(base, entry), base / freq);
+            if base + freq < 0x8000_0000 {
+                assert_eq!(fast_div(base + freq, entry), (base + freq) / freq);
+            }
+            assert_eq!(fast_div(0x7FFF_FFFF, entry), 0x7FFF_FFFF / freq);
+        }
+    }
+
+    #[test]
+    fn roundtrip_streaming() {
+        for data in test_datasets() {
+            check_streaming(&data);
+        }
+    }
+
+    #[test]
+    fn byte_identical_streaming() {
+        for data in test_datasets() {
+            check_byte_identical(&data);
+        }
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        let mut uniform = Vec::with_capacity(64 * 1024);
+        for _ in 0..(64 * 1024) {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            uniform.push((state & 0xff) as u8);
+        }
+        check_byte_identical(&uniform);
     }
 }
