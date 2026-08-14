@@ -367,6 +367,9 @@ fn main() {
         "{}",
         phase_line(" - decode:", total_voxels, total_decode_ns)
     );
+    println!("------------------------");
+    make_modeler().print_summary();
+    println!("------------------------");
     if total_voxels == 0 {
         println!("bits per voxel: no four bit palette sections found");
         return;
