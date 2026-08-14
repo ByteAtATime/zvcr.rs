@@ -44,15 +44,15 @@ fn bench_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("rans");
     group.throughput(Throughput::Bytes(SIZE as u64));
     group.bench_function("decode", |b| {
+        let mut out = vec![0u8; SIZE];
         b.iter(|| {
             let mut dec = rans::RansDecoder::new(black_box(&body));
-            let mut out = vec![0u8; SIZE];
             for i in 0..SIZE {
                 let e = unsafe { table.get_unchecked(dec.slot() as usize) };
                 out[i] = e.sym;
                 dec.advance(e.freq as u32, e.start as u32);
             }
-            black_box(out);
+            black_box(&out);
         });
     });
     group.finish();

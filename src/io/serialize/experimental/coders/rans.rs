@@ -25,6 +25,7 @@ impl RansEncoder {
     }
 
     pub fn put(&mut self, freq: u32, start: u32) {
+        debug_assert!(freq > 0 && start + freq <= M && start < M);
         let x_max = X_MAX_BASE * freq;
         while self.x >= x_max {
             self.bytes.push((self.x & 0xff) as u8);
@@ -113,6 +114,7 @@ pub fn build_freq_table(data: &[u8]) -> ([u16; 256], [u16; 256]) {
             freq[s] -= 1;
             sum -= 1;
         }
+        debug_assert!(freq.iter().map(|&f| f as u32).sum::<u32>() == M);
     }
     (freq, starts(&freq))
 }
