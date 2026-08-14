@@ -1,3 +1,4 @@
+pub mod coders;
 pub(crate) mod file;
 pub(crate) mod reader;
 pub(crate) mod transforms;
