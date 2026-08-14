@@ -4,13 +4,13 @@ use crate::models::ModelerEntry;
 
 use super::{Modeler, SectionContext};
 
-static TOTAL_SECTIONS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_STREAMS: AtomicU64 = AtomicU64::new(0);
 
 pub struct IdentityModeler;
 
 impl Modeler for IdentityModeler {
     fn transform(&mut self, _ctx: &SectionContext, indices: &[u8]) -> Vec<u8> {
-        TOTAL_SECTIONS.fetch_add(1, Ordering::Relaxed);
+        TOTAL_STREAMS.fetch_add(1, Ordering::Relaxed);
 
         indices.to_vec()
     }
@@ -20,7 +20,7 @@ impl Modeler for IdentityModeler {
     }
 
     fn print_summary(&self) {
-        println!("Total sections: {}", TOTAL_SECTIONS.load(Ordering::Relaxed));
+        println!("Total streams: {}", TOTAL_STREAMS.load(Ordering::Relaxed));
     }
 }
 
