@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use std::path::Path;
 use std::time::Instant;
 
-use models::{IdentityModeler, ModelerFactory};
+use models::{Modeler, find_modeler};
 use zvcr::Reader;
 use zvcr::io::compression::{ZSTD_COMPRESSION_LEVEL_DEFAULT, compress_zstd_parts, decompress_zstd};
 use zvcr::io::serialize::experimental::coders::rans::{
@@ -171,7 +171,7 @@ fn rans_decode_stream(body: &[u8], symbol_count: usize, side: &[u8]) -> Vec<u8> 
 }
 
 fn bench_kind(
-    make_modeler: &ModelerFactory,
+    make_modeler: &(dyn Fn() -> Box<dyn Modeler> + Sync),
     streams: &[Vec<u8>],
     voxels_per_stream: u64,
     context: &str,
@@ -241,7 +241,7 @@ fn bench_kind(
 }
 
 fn bench_region(
-    make_modeler: &ModelerFactory,
+    make_modeler: &(dyn Fn() -> Box<dyn Modeler> + Sync),
     reader: &ReferenceReader,
     path: &Path,
 ) -> RegionOutcome {
@@ -309,10 +309,7 @@ fn phase_line(label: &str, voxels: u64, ns: u128) -> String {
 fn main() {
     let cli = Cli::parse();
     let modeler_name = cli.modeler.as_str();
-    let make_modeler: Box<ModelerFactory> = match cli.modeler.as_str() {
-        "identity" => Box::new(|| Box::new(IdentityModeler)),
-        other => panic!("unknown modeler {other}"),
-    };
+    let make_modeler = find_modeler(cli.modeler.as_str());
 
     let paths = zvcr::bench::discover::discover(Path::new("test_files"), Some(cli.sample));
     if paths.is_empty() {
@@ -326,7 +323,7 @@ fn main() {
     let wall_start = Instant::now();
     let outcomes: Vec<RegionOutcome> = paths
         .par_iter()
-        .map(|path| bench_region(make_modeler.as_ref(), &reader, path))
+        .map(|path| bench_region(make_modeler, &reader, path))
         .collect();
     let wall = wall_start.elapsed().as_secs_f64();
 

@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::models::ModelerEntry;
+
 use super::Modeler;
 
 static TOTAL_SECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -23,5 +25,12 @@ impl Modeler for IdentityModeler {
 
     fn print_summary(&self) {
         println!("Total sections: {}", TOTAL_SECTIONS.load(Ordering::Relaxed));
+    }
+}
+
+inventory::submit! {
+    ModelerEntry {
+        name: "identity",
+        make: || Box::new(IdentityModeler),
     }
 }
