@@ -4,6 +4,32 @@ const L: u32 = 1 << 23;
 const X_MAX_BASE: u32 = (L >> 12) << 8;
 
 #[derive(Clone, Copy)]
+struct DivMagic {
+    magic: u32,
+    shift: u8,
+}
+
+const fn div_magic(d: u32) -> DivMagic {
+    let l = 31 - d.leading_zeros();
+    if d & (d - 1) == 0 {
+        return DivMagic { magic: 0, shift: (l - 1) as u8 };
+    }
+    let pow = 1u128 << (33 + l);
+    let magic = ((pow + d as u128 - 1) / d as u128) as u32;
+    DivMagic { magic, shift: l as u8 }
+}
+
+const DIV_TABLE: [DivMagic; M as usize + 1] = {
+    let mut t = [DivMagic { magic: 0, shift: 0 }; M as usize + 1];
+    let mut d = 2;
+    while d <= M as usize {
+        t[d] = div_magic(d as u32);
+        d += 1;
+    }
+    t
+};
+
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct DecEntry {
     pub freq: u16,
@@ -31,7 +57,11 @@ impl RansEncoder {
             self.bytes.push((self.x & 0xff) as u8);
             self.x >>= 8;
         }
-        let q = self.x / freq;
+        let q = if freq > 1 {
+            fast_div(self.x, DIV_TABLE[freq as usize])
+        } else {
+            self.x
+        };
         let r = self.x - q * freq;
         self.x = (q << PRECISION_BITS) + r + start;
     }
@@ -71,6 +101,13 @@ impl<'a> RansDecoder<'a> {
             self.x = (self.x << 8) | (b as u32);
         }
     }
+}
+
+#[inline(always)]
+fn fast_div(x: u32, d: DivMagic) -> u32 {
+    let q = ((x as u64) * (d.magic as u64) >> 32) as u32;
+    let t = ((x - q) >> 1) + q;
+    t >> d.shift
 }
 
 fn starts(freq: &[u16; 256]) -> [u16; 256] {
@@ -131,7 +168,7 @@ pub fn build_decode_table(freq: &[u16; 256], start: &[u16; 256]) -> Vec<DecEntry
 
 #[cfg(test)]
 mod tests {
-    use super::{RansDecoder, RansEncoder, build_decode_table, build_freq_table};
+    use super::{DIV_TABLE, L, M, RansDecoder, RansEncoder, build_decode_table, build_freq_table, fast_div};
 
     fn check_streaming(data: &[u8]) {
         let (freq, start) = build_freq_table(data);
@@ -149,6 +186,25 @@ mod tests {
             dec.advance(e.freq as u32, e.start as u32);
         }
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn fast_div_correct() {
+        for freq in 2u32..=M {
+            let dm = DIV_TABLE[freq as usize];
+            let mut x = L;
+            for _ in 0..1024 {
+                assert_eq!(fast_div(x, dm), x / freq, "freq={freq} x={x}");
+                x = x.wrapping_mul(1103515245).wrapping_add(12345);
+                x = x & 0x7FFFFFFF;
+                if x < L {
+                    x += L;
+                }
+            }
+            assert_eq!(fast_div(0, dm), 0u32);
+            assert_eq!(fast_div(freq, dm), 1u32);
+            assert_eq!(fast_div(freq.wrapping_sub(1), dm), 0u32);
+        }
     }
 
     #[test]
