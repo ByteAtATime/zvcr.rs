@@ -19,10 +19,6 @@ impl Modeler for IdentityModeler {
         transformed.to_vec()
     }
 
-    fn transformed_len(&self, input_len: usize) -> usize {
-        input_len
-    }
-
     fn print_summary(&self) {
         println!("Total sections: {}", TOTAL_SECTIONS.load(Ordering::Relaxed));
     }

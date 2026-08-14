@@ -183,16 +183,12 @@ fn bench_kind(
     let encode_start = Instant::now();
     let mut modeler = make_modeler();
     let mut transformed = Vec::with_capacity(streams.len());
+    let mut transformed_lens = Vec::with_capacity(streams.len());
     let mut combined_len = 0usize;
     for stream in streams {
-        let len = modeler.transformed_len(stream.len());
         let t = modeler.transform(stream);
-        assert_eq!(
-            t.len(),
-            len,
-            "{context}: transformed stream length disagrees with transformed_len"
-        );
         combined_len += t.len();
+        transformed_lens.push(t.len());
         transformed.push(t);
     }
     let mut combined = Vec::with_capacity(combined_len);
@@ -216,8 +212,7 @@ fn bench_kind(
     let decoded = rans_decode_stream(restored_body, combined_len, restored_side);
     let mut modeler = make_modeler();
     let mut decoded_offset = 0;
-    for (stream_index, stream) in streams.iter().enumerate() {
-        let len = modeler.transformed_len(stream.len());
+    for (stream_index, (stream, len)) in streams.iter().zip(&transformed_lens).enumerate() {
         let restored_part = decoded
             .get(decoded_offset..decoded_offset + len)
             .unwrap_or_else(|| panic!("{context}: decoded stream is shorter than encoded stream"));

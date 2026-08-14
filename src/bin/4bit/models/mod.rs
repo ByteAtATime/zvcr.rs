@@ -3,8 +3,6 @@ pub trait Modeler: Sync {
 
     fn inverse(&mut self, transformed: &[u8]) -> Vec<u8>;
 
-    fn transformed_len(&self, input_len: usize) -> usize;
-
     fn print_summary(&self) {}
 }
 
