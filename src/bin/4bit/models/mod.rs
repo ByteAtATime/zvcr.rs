@@ -1,7 +1,17 @@
-pub trait Modeler: Sync {
-    fn transform(&mut self, indices: &[u8]) -> Vec<u8>;
+use zvcr::region::palette::Palette;
 
-    fn inverse(&mut self, transformed: &[u8]) -> Vec<u8>;
+#[derive(Debug, Clone)]
+pub struct SectionContext {
+    pub x: u8,
+    pub y: u8,
+    pub z: u8,
+    pub palette: Palette,
+}
+
+pub trait Modeler: Sync {
+    fn transform(&mut self, ctx: &SectionContext, indices: &[u8]) -> Vec<u8>;
+
+    fn inverse(&mut self, ctx: &SectionContext, transformed: &[u8]) -> Vec<u8>;
 
     fn print_summary(&self) {}
 }

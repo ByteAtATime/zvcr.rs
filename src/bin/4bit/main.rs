@@ -5,8 +5,9 @@ use rayon::prelude::*;
 use std::path::Path;
 use std::time::Instant;
 
-use models::{Modeler, find_modeler};
+use models::{Modeler, SectionContext, find_modeler};
 use zvcr::Reader;
+use zvcr::definitions::REGION_SIDELENGTH_SEGMENTS;
 use zvcr::io::compression::{ZSTD_COMPRESSION_LEVEL_DEFAULT, compress_zstd_parts, decompress_zstd};
 use zvcr::io::serialize::experimental::coders::rans::{
     RansDecoder, RansEncoder, build_decode_table, build_freq_table,
@@ -51,6 +52,11 @@ struct RegionOutcome {
     biome: KindTotals,
 }
 
+struct SectionStream {
+    ctx: SectionContext,
+    indices: Vec<u8>,
+}
+
 fn nibbles_to_bytes(packed: &[u8], entry_count: usize) -> Vec<u8> {
     let last_bit = entry_count * 4;
     let required_bytes = last_bit.div_ceil(8);
@@ -69,11 +75,13 @@ fn nibbles_to_bytes(packed: &[u8], entry_count: usize) -> Vec<u8> {
     entries
 }
 
-fn extract_four_bit_index_streams<const N: usize>(
+fn extract_four_bit_streams<const N: usize>(
     sections: &[zvcr::region::delta::PackedDeltaData<N>],
-) -> Vec<Vec<u8>> {
+    x: u8,
+    z: u8,
+) -> Vec<SectionStream> {
     let mut streams = Vec::new();
-    for section in sections {
+    for (y, section) in sections.iter().enumerate() {
         for snapshot in section.snapshots() {
             let Data::Paletted(paletted) = &snapshot.data.data else {
                 continue;
@@ -81,18 +89,31 @@ fn extract_four_bit_index_streams<const N: usize>(
             if paletted.palette.bits_per_entry != 4 {
                 continue;
             }
-            streams.push(nibbles_to_bytes(&paletted.packed_long_array, N));
+            streams.push(SectionStream {
+                ctx: SectionContext {
+                    x,
+                    y: y as u8,
+                    z,
+                    palette: paletted.palette.clone(),
+                },
+                indices: nibbles_to_bytes(&paletted.packed_long_array, N),
+            });
         }
     }
     streams
 }
 
-fn collect_region_streams(region: &RegionData) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+fn collect_region_streams(region: &RegionData) -> (Vec<SectionStream>, Vec<SectionStream>) {
     let mut blocks = Vec::new();
     let mut biomes = Vec::new();
-    for segment in region.segments.iter().flatten() {
-        blocks.extend(extract_four_bit_index_streams(&segment.block_sections));
-        biomes.extend(extract_four_bit_index_streams(&segment.biome_sections));
+    for (segment_index, segment) in region.segments.iter().enumerate() {
+        let Some(segment) = segment else {
+            continue;
+        };
+        let x = (segment_index / REGION_SIDELENGTH_SEGMENTS) as u8;
+        let z = (segment_index % REGION_SIDELENGTH_SEGMENTS) as u8;
+        blocks.extend(extract_four_bit_streams(&segment.block_sections, x, z));
+        biomes.extend(extract_four_bit_streams(&segment.biome_sections, x, z));
     }
     (blocks, biomes)
 }
@@ -172,7 +193,7 @@ fn rans_decode_stream(body: &[u8], symbol_count: usize, side: &[u8]) -> Vec<u8> 
 
 fn bench_kind(
     make_modeler: &(dyn Fn() -> Box<dyn Modeler> + Sync),
-    streams: &[Vec<u8>],
+    streams: &[SectionStream],
     voxels_per_stream: u64,
     context: &str,
 ) -> KindTotals {
@@ -186,7 +207,7 @@ fn bench_kind(
     let mut transformed_lens = Vec::with_capacity(streams.len());
     let mut combined_len = 0usize;
     for stream in streams {
-        let t = modeler.transform(stream);
+        let t = modeler.transform(&stream.ctx, &stream.indices);
         combined_len += t.len();
         transformed_lens.push(t.len());
         transformed.push(t);
@@ -216,9 +237,9 @@ fn bench_kind(
         let restored_part = decoded
             .get(decoded_offset..decoded_offset + len)
             .unwrap_or_else(|| panic!("{context}: decoded stream is shorter than encoded stream"));
-        let restored = modeler.inverse(restored_part);
+        let restored = modeler.inverse(&stream.ctx, restored_part);
         assert_eq!(
-            restored, *stream,
+            restored, stream.indices,
             "{context}: stream {stream_index} differs after modeler, rANS, and zstd8 roundtrip"
         );
         decoded_offset += len;

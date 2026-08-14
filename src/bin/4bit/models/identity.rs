@@ -2,20 +2,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::models::ModelerEntry;
 
-use super::Modeler;
+use super::{Modeler, SectionContext};
 
 static TOTAL_SECTIONS: AtomicU64 = AtomicU64::new(0);
 
 pub struct IdentityModeler;
 
 impl Modeler for IdentityModeler {
-    fn transform(&mut self, indices: &[u8]) -> Vec<u8> {
+    fn transform(&mut self, _ctx: &SectionContext, indices: &[u8]) -> Vec<u8> {
         TOTAL_SECTIONS.fetch_add(1, Ordering::Relaxed);
 
         indices.to_vec()
     }
 
-    fn inverse(&mut self, transformed: &[u8]) -> Vec<u8> {
+    fn inverse(&mut self, _ctx: &SectionContext, transformed: &[u8]) -> Vec<u8> {
         transformed.to_vec()
     }
 
