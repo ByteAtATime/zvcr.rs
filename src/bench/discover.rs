@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-pub(super) fn discover(root: &Path, sample: Option<usize>) -> Vec<PathBuf> {
+pub fn discover(root: &Path, sample: Option<usize>) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {

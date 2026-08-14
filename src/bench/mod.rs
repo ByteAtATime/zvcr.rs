@@ -1,4 +1,4 @@
-mod discover;
+pub mod discover;
 mod format;
 mod report;
 mod worker;
