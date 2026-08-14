@@ -17,12 +17,16 @@ fn make_data(size: usize) -> Vec<u8> {
 
 fn bench_encode(c: &mut Criterion) {
     let data = make_data(SIZE);
+    let (freq, start) = rans::build_freq_table(&data);
     let mut group = c.benchmark_group("rans");
     group.throughput(Throughput::Bytes(SIZE as u64));
     group.bench_function("encode", |b| {
         b.iter(|| {
-            let out = rans::encode(black_box(&data));
-            black_box(out);
+            let mut enc = rans::RansEncoder::new();
+            for &b in data.iter().rev() {
+                enc.put(freq[b as usize] as u32, start[b as usize] as u32);
+            }
+            black_box(enc.finish());
         });
     });
     group.finish();
@@ -30,12 +34,24 @@ fn bench_encode(c: &mut Criterion) {
 
 fn bench_decode(c: &mut Criterion) {
     let data = make_data(SIZE);
-    let encoded = rans::encode(&data);
+    let (freq, start) = rans::build_freq_table(&data);
+    let table = rans::build_decode_table(&freq, &start);
+    let mut enc = rans::RansEncoder::new();
+    for &b in data.iter().rev() {
+        enc.put(freq[b as usize] as u32, start[b as usize] as u32);
+    }
+    let body = enc.finish();
     let mut group = c.benchmark_group("rans");
     group.throughput(Throughput::Bytes(SIZE as u64));
     group.bench_function("decode", |b| {
         b.iter(|| {
-            let out = rans::decode(black_box(&encoded));
+            let mut dec = rans::RansDecoder::new(black_box(&body));
+            let mut out = vec![0u8; SIZE];
+            for i in 0..SIZE {
+                let e = unsafe { table.get_unchecked(dec.slot() as usize) };
+                out[i] = e.sym;
+                dec.advance(e.freq as u32, e.start as u32);
+            }
             black_box(out);
         });
     });
