@@ -14,7 +14,7 @@ use zvcr::io::serialize::experimental::coders::rans::{
 };
 use zvcr::raw::RegionData;
 use zvcr::region::packed_data::Data;
-use zvcr::{ReferenceReader, SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS};
+use zvcr::{ReferenceReader, SECTION_SIZE_BLOCKS};
 
 const RANS_FREQ_TOTAL: u64 = 4096;
 
@@ -35,21 +35,6 @@ struct KindTotals {
     bytes: u64,
     encode_ns: u128,
     decode_ns: u128,
-}
-
-impl KindTotals {
-    fn bits_per_voxel(&self) -> f64 {
-        if self.voxels == 0 {
-            return 0.0;
-        }
-        (self.bytes as f64 * 8.0) / self.voxels as f64
-    }
-}
-
-#[derive(Default)]
-struct RegionOutcome {
-    block: KindTotals,
-    biome: KindTotals,
 }
 
 struct SectionStream {
@@ -103,9 +88,8 @@ fn extract_four_bit_streams<const N: usize>(
     streams
 }
 
-fn collect_region_streams(region: &RegionData) -> (Vec<SectionStream>, Vec<SectionStream>) {
+fn collect_region_streams(region: &RegionData) -> Vec<SectionStream> {
     let mut blocks = Vec::new();
-    let mut biomes = Vec::new();
     for (segment_index, segment) in region.segments.iter().enumerate() {
         let Some(segment) = segment else {
             continue;
@@ -113,9 +97,8 @@ fn collect_region_streams(region: &RegionData) -> (Vec<SectionStream>, Vec<Secti
         let x = (segment_index / REGION_SIDELENGTH_SEGMENTS) as u8;
         let z = (segment_index % REGION_SIDELENGTH_SEGMENTS) as u8;
         blocks.extend(extract_four_bit_streams(&segment.block_sections, x, z));
-        biomes.extend(extract_four_bit_streams(&segment.biome_sections, x, z));
     }
-    (blocks, biomes)
+    blocks
 }
 
 fn serialize_freq_table(freq: &[u16; 256]) -> Vec<u8> {
@@ -260,38 +243,19 @@ fn bench_region(
     make_modeler: &(dyn Fn() -> Box<dyn Modeler> + Sync),
     reader: &ReferenceReader,
     path: &Path,
-) -> RegionOutcome {
+) -> KindTotals {
     let region = reader
         .read(path)
         .unwrap_or_else(|e| panic!("failed to read region {}: {e}", path.display()));
-    let (blocks, biomes) = collect_region_streams(&region);
+    let blocks = collect_region_streams(&region);
 
     let context = path.display().to_string();
-    RegionOutcome {
-        block: bench_kind(
-            make_modeler,
-            &blocks,
-            SECTION_SIZE_BLOCKS as u64,
-            &format!("{context} blocks"),
-        ),
-        biome: bench_kind(
-            make_modeler,
-            &biomes,
-            SECTION_SIZE_BIOMES as u64,
-            &format!("{context} biomes"),
-        ),
-    }
-}
-
-fn print_kind_totals(label: &str, totals: &KindTotals) {
-    println!(
-        "{label}: {} streams, {} voxels, {} rans bytes, {} zstd8 bytes, {:.4} bits per voxel",
-        totals.streams,
-        totals.voxels,
-        totals.rans_bytes,
-        totals.bytes,
-        totals.bits_per_voxel()
-    );
+    bench_kind(
+        make_modeler,
+        &blocks,
+        SECTION_SIZE_BLOCKS as u64,
+        &format!("{context} blocks"),
+    )
 }
 
 fn format_rate(rate: f64, unit: &str) -> String {
@@ -337,56 +301,43 @@ fn main() {
 
     let reader = ReferenceReader::new(0);
     let wall_start = Instant::now();
-    let outcomes: Vec<RegionOutcome> = paths
+    let per_region: Vec<KindTotals> = paths
         .par_iter()
         .map(|path| bench_region(make_modeler, &reader, path))
         .collect();
     let wall = wall_start.elapsed().as_secs_f64();
 
-    let mut block = KindTotals::default();
-    let mut biome = KindTotals::default();
-    for outcome in &outcomes {
-        block.streams += outcome.block.streams;
-        block.voxels += outcome.block.voxels;
-        block.rans_bytes += outcome.block.rans_bytes;
-        block.bytes += outcome.block.bytes;
-        block.encode_ns += outcome.block.encode_ns;
-        block.decode_ns += outcome.block.decode_ns;
-        biome.streams += outcome.biome.streams;
-        biome.voxels += outcome.biome.voxels;
-        biome.rans_bytes += outcome.biome.rans_bytes;
-        biome.bytes += outcome.biome.bytes;
-        biome.encode_ns += outcome.biome.encode_ns;
-        biome.decode_ns += outcome.biome.decode_ns;
+    let mut totals = KindTotals::default();
+    for outcome in &per_region {
+        totals.streams += outcome.streams;
+        totals.voxels += outcome.voxels;
+        totals.rans_bytes += outcome.rans_bytes;
+        totals.bytes += outcome.bytes;
+        totals.encode_ns += outcome.encode_ns;
+        totals.decode_ns += outcome.decode_ns;
     }
 
-    print_kind_totals("blocks", &block);
-    print_kind_totals("biomes", &biome);
-
-    let total_rans_bytes = block.rans_bytes + biome.rans_bytes;
-    let total_bytes = block.bytes + biome.bytes;
-    let total_voxels = block.voxels + biome.voxels;
-    let total_encode_ns = block.encode_ns + biome.encode_ns;
-    let total_decode_ns = block.decode_ns + biome.decode_ns;
-    println!("total rans bytes: {total_rans_bytes}");
-    println!("total zstd8 bytes: {total_bytes}");
+    println!("total streams: {}", totals.streams);
+    println!("total voxels: {}", totals.voxels);
+    println!("total rans bytes: {}", totals.rans_bytes);
+    println!("total zstd8 bytes: {}", totals.bytes);
     println!("wall: {wall:.1} s");
     println!("throughput:");
     println!(
         "{}",
-        phase_line(" - encode:", total_voxels, total_encode_ns)
+        phase_line(" - encode:", totals.voxels, totals.encode_ns)
     );
     println!(
         "{}",
-        phase_line(" - decode:", total_voxels, total_decode_ns)
+        phase_line(" - decode:", totals.voxels, totals.decode_ns)
     );
     println!("------------------------");
     make_modeler().print_summary();
     println!("------------------------");
-    if total_voxels == 0 {
+    if totals.voxels == 0 {
         println!("bits per voxel: no four bit palette sections found");
         return;
     }
-    let bits_per_voxel = (total_bytes as f64 * 8.0) / total_voxels as f64;
+    let bits_per_voxel = (totals.bytes as f64 * 8.0) / totals.voxels as f64;
     println!("bits per voxel: {bits_per_voxel:.4}");
 }
