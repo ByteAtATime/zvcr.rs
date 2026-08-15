@@ -9,14 +9,9 @@ use models::{Modeler, SectionContext, find_modeler};
 use zvcr::Reader;
 use zvcr::definitions::REGION_SIDELENGTH_SEGMENTS;
 use zvcr::io::compression::{ZSTD_COMPRESSION_LEVEL_DEFAULT, compress_zstd_parts, decompress_zstd};
-use zvcr::io::serialize::experimental::coders::rans::{
-    RansDecoder, RansEncoder, build_decode_table, build_freq_table,
-};
 use zvcr::raw::RegionData;
 use zvcr::region::packed_data::Data;
 use zvcr::{ReferenceReader, SECTION_SIZE_BLOCKS};
-
-const RANS_FREQ_TOTAL: u64 = 4096;
 
 #[derive(Parser)]
 struct Cli {
@@ -31,7 +26,7 @@ struct Cli {
 struct KindTotals {
     streams: u64,
     voxels: u64,
-    rans_bytes: u64,
+    raw_bytes: u64,
     bytes: u64,
     encode_ns: u128,
     decode_ns: u128,
@@ -101,79 +96,6 @@ fn collect_region_streams(region: &RegionData) -> Vec<SectionStream> {
     blocks
 }
 
-fn serialize_freq_table(freq: &[u16; 256]) -> Vec<u8> {
-    let mut side = vec![0u8; 32];
-    for (symbol, &frequency) in freq.iter().enumerate() {
-        if frequency > 0 {
-            side[symbol / 8] |= 1 << (symbol % 8);
-        }
-    }
-    for &frequency in freq.iter().filter(|&frequency| *frequency > 0) {
-        side.extend_from_slice(&frequency.to_le_bytes());
-    }
-    side
-}
-
-fn deserialize_freq_table(side: &[u8]) -> [u16; 256] {
-    let bitmap = side
-        .get(..32)
-        .expect("freq table truncated: missing symbol bitmap");
-    let present = bitmap.iter().map(|byte| byte.count_ones()).sum::<u32>() as usize;
-    let payload = side
-        .get(32..32 + present * 2)
-        .expect("freq table truncated: missing frequencies");
-
-    let mut freq = [0u16; 256];
-    let mut payload_index = 0;
-    for symbol in 0..256 {
-        if bitmap[symbol / 8] & (1 << (symbol % 8)) == 0 {
-            continue;
-        }
-        freq[symbol] = u16::from_le_bytes([payload[payload_index], payload[payload_index + 1]]);
-        payload_index += 2;
-    }
-    let total: u64 = freq.iter().map(|&frequency| frequency as u64).sum();
-    assert_eq!(
-        total, RANS_FREQ_TOTAL,
-        "freq table sums to {total} instead of the rANS precision total"
-    );
-    freq
-}
-
-fn starts_from_freq(freq: &[u16; 256]) -> [u16; 256] {
-    let mut starts = [0u16; 256];
-    let mut cumulative = 0u16;
-    for symbol in 0..256 {
-        starts[symbol] = cumulative;
-        cumulative += freq[symbol];
-    }
-    starts
-}
-
-fn rans_encode_stream(symbols: &[u8]) -> Vec<u8> {
-    let (freq, start) = build_freq_table(symbols);
-    let mut encoder = RansEncoder::with_capacity(symbols.len());
-    for &symbol in symbols.iter().rev() {
-        encoder.put(freq[symbol as usize] as u32, start[symbol as usize] as u32);
-    }
-    encoder.finish()
-}
-
-fn rans_decode_stream(body: &[u8], symbol_count: usize, side: &[u8]) -> Vec<u8> {
-    let freq = deserialize_freq_table(side);
-    let start = starts_from_freq(&freq);
-    let table = build_decode_table(&freq, &start);
-
-    let mut decoder = RansDecoder::new(body);
-    let mut symbols = Vec::with_capacity(symbol_count);
-    for _ in 0..symbol_count {
-        let entry = table[decoder.slot() as usize];
-        symbols.push(entry.sym);
-        decoder.advance(entry.freq as u32, entry.start as u32);
-    }
-    symbols
-}
-
 fn bench_kind(
     make_modeler: &(dyn Fn() -> Box<dyn Modeler> + Sync),
     streams: &[SectionStream],
@@ -200,20 +122,13 @@ fn bench_kind(
         combined.extend_from_slice(stream);
     }
 
-    let (freq, _) = build_freq_table(&combined);
-    let side = serialize_freq_table(&freq);
-    let body = rans_encode_stream(&combined);
-    let rans_bytes = side.len() + body.len();
-
-    let compressed = compress_zstd_parts(&[&side, &body], ZSTD_COMPRESSION_LEVEL_DEFAULT)
+    let raw_bytes = combined.len() as u64;
+    let compressed = compress_zstd_parts(&[&combined], ZSTD_COMPRESSION_LEVEL_DEFAULT)
         .expect("zstd8 compression failed");
     let encode_ns = encode_start.elapsed().as_nanos();
 
     let decode_start = Instant::now();
-    let decompressed = decompress_zstd(&compressed).expect("zstd8 decompression failed");
-    let (restored_side, restored_body) = decompressed.split_at(side.len());
-
-    let decoded = rans_decode_stream(restored_body, combined_len, restored_side);
+    let decoded = decompress_zstd(&compressed).expect("zstd8 decompression failed");
     let mut modeler = make_modeler();
     let mut decoded_offset = 0;
     for (stream_index, (stream, len)) in streams.iter().zip(&transformed_lens).enumerate() {
@@ -223,7 +138,7 @@ fn bench_kind(
         let restored = modeler.inverse(&stream.ctx, restored_part);
         assert_eq!(
             restored, stream.indices,
-            "{context}: stream {stream_index} differs after modeler, rANS, and zstd8 roundtrip"
+            "{context}: stream {stream_index} differs after modeler and zstd8 roundtrip"
         );
         decoded_offset += len;
     }
@@ -232,7 +147,7 @@ fn bench_kind(
     KindTotals {
         streams: streams.len() as u64,
         voxels: streams.len() as u64 * voxels_per_stream,
-        rans_bytes: rans_bytes as u64,
+        raw_bytes,
         bytes: compressed.len() as u64,
         encode_ns,
         decode_ns,
@@ -311,7 +226,7 @@ fn main() {
     for outcome in &per_region {
         totals.streams += outcome.streams;
         totals.voxels += outcome.voxels;
-        totals.rans_bytes += outcome.rans_bytes;
+        totals.raw_bytes += outcome.raw_bytes;
         totals.bytes += outcome.bytes;
         totals.encode_ns += outcome.encode_ns;
         totals.decode_ns += outcome.decode_ns;
@@ -319,7 +234,7 @@ fn main() {
 
     println!("total streams: {}", totals.streams);
     println!("total voxels: {}", totals.voxels);
-    println!("total rans bytes: {}", totals.rans_bytes);
+    println!("total raw bytes: {}", totals.raw_bytes);
     println!("total zstd8 bytes: {}", totals.bytes);
     println!("wall: {wall:.1} s");
     println!("throughput:");
