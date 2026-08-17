@@ -68,7 +68,7 @@ pub fn run(root: &Path, verify: bool, sample: Option<usize>) {
 
     let ref_arc = Arc::new(ReferenceReader::new(0));
     let exp_w_arc = Arc::new(ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT));
-    let exp_r_arc = Arc::new(ExperimentalReader::new(0));
+    let exp_r_arc = Arc::new(ExperimentalReader::new());
 
     let progress = Arc::new(Progress {
         done: AtomicU64::new(0),
