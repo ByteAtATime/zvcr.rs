@@ -1,21 +1,24 @@
-use std::sync::Arc;
+use crate::definitions::SegmentAtom;
+use crate::region::packed_data::PalettedData;
+use crate::region::palette::ATOM_COUNT;
 
-use crate::definitions::*;
-use crate::io::buffer::PooledBytes;
-use crate::region::packed_data::{Data, PackedData, PalettedData};
-use crate::region::palette::{
-    ATOM_COUNT, DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette, bits_per_entry,
-};
-use crate::region::unpacked_view::UnpackedData;
+pub(crate) const MAX_CELLS: usize = 4096;
 
 pub(crate) struct ReusablePackScratch {
-    indices: [u8; ATOM_COUNT],
-    seen: [u8; ATOM_COUNT],
-    seen_gen: u8,
-    atoms: Vec<SegmentAtom>,
-    counts: Vec<u32>,
-    order: Vec<usize>,
-    sorted: Vec<SegmentAtom>,
+    pub(crate) indices: [u8; ATOM_COUNT],
+    pub(crate) seen: [u8; ATOM_COUNT],
+    pub(crate) seen_gen: u8,
+    pub(crate) values: [u8; MAX_CELLS],
+    pub(crate) out: [u8; MAX_CELLS],
+    pub(crate) wide: [u16; MAX_CELLS],
+    pub(crate) wide_out: [u8; MAX_CELLS * 2],
+    pub(crate) hist: [u32; 256],
+    pub(crate) remap: [u8; 256],
+    pub(crate) distinct: [u8; 256],
+    pub(crate) atoms: Vec<SegmentAtom>,
+    pub(crate) rank_atoms: Vec<SegmentAtom>,
+    pub(crate) counts: Vec<u32>,
+    pub(crate) order: Vec<u16>,
 }
 
 impl ReusablePackScratch {
@@ -24,130 +27,126 @@ impl ReusablePackScratch {
             indices: [0; ATOM_COUNT],
             seen: [0; ATOM_COUNT],
             seen_gen: 0,
+            values: [0; MAX_CELLS],
+            out: [0; MAX_CELLS],
+            wide: [0; MAX_CELLS],
+            wide_out: [0; MAX_CELLS * 2],
+            hist: [0; 256],
+            remap: [0; 256],
+            distinct: [0; 256],
             atoms: Vec::new(),
+            rank_atoms: Vec::new(),
             counts: Vec::new(),
             order: Vec::new(),
-            sorted: Vec::new(),
         }
     }
 }
 
-pub(crate) fn build_palette_reused<const UNPACKED_SIZE: usize>(
-    data: &UnpackedData<UNPACKED_SIZE>,
-    scratch: &mut ReusablePackScratch,
-) -> Palette {
-    scratch.seen_gen = scratch.seen_gen.wrapping_add(1);
-    if scratch.seen_gen == 0 {
-        scratch.seen.fill(0);
-        scratch.seen_gen = 1;
-    }
-    let seen_mark = scratch.seen_gen;
-
-    scratch.atoms.clear();
-    for &atom in data {
-        if scratch.seen[atom as usize] == seen_mark {
-            continue;
+pub(crate) fn extract_indices(source_bits: usize, bytes: &[u8], out: &mut [u8]) {
+    match source_bits {
+        8 => out.copy_from_slice(bytes),
+        4 => {
+            for (byte, pair) in bytes.iter().zip(out.chunks_exact_mut(2)) {
+                pair[0] = byte & 0x0F;
+                pair[1] = byte >> 4;
+            }
         }
-        scratch.seen[atom as usize] = seen_mark;
-        if scratch.atoms.len() >= MAX_INDIRECT_PALETTE_SIZE {
-            return DIRECT_PALETTE.clone();
+        2 => {
+            for (byte, quad) in bytes.iter().zip(out.chunks_exact_mut(4)) {
+                quad[0] = byte & 0b11;
+                quad[1] = (byte >> 2) & 0b11;
+                quad[2] = (byte >> 4) & 0b11;
+                quad[3] = byte >> 6;
+            }
         }
-        scratch.indices[atom as usize] = scratch.atoms.len() as u8;
-        scratch.atoms.push(atom);
-    }
-
-    scratch.counts.clear();
-    scratch.counts.resize(scratch.atoms.len(), 0);
-    for &atom in data {
-        scratch.counts[scratch.indices[atom as usize] as usize] += 1;
-    }
-
-    scratch.order.clear();
-    scratch.order.extend(0..scratch.atoms.len());
-    scratch
-        .order
-        .sort_unstable_by_key(|&i| std::cmp::Reverse(scratch.counts[i]));
-
-    scratch.sorted.clear();
-    for &i in &scratch.order {
-        scratch.sorted.push(scratch.atoms[i]);
-    }
-    for (new_idx, &i) in scratch.order.iter().enumerate() {
-        scratch.indices[scratch.atoms[i] as usize] = new_idx as u8;
-    }
-
-    let bpe = bits_per_entry(scratch.sorted.len());
-    Palette {
-        palette: Arc::from(&scratch.sorted[..]),
-        bits_per_entry: bpe,
+        1 => {
+            for (byte, octet) in bytes.iter().zip(out.chunks_exact_mut(8)) {
+                octet[0] = byte & 1;
+                octet[1] = (byte >> 1) & 1;
+                octet[2] = (byte >> 2) & 1;
+                octet[3] = (byte >> 3) & 1;
+                octet[4] = (byte >> 4) & 1;
+                octet[5] = (byte >> 5) & 1;
+                octet[6] = (byte >> 6) & 1;
+                octet[7] = byte >> 7;
+            }
+        }
+        _ => unreachable!("unsupported source bits per entry {source_bits}"),
     }
 }
 
-fn vec_u64_to_bytes(v: Vec<u64>) -> PooledBytes {
-    let len = v.len() * 8;
-    let capacity = v.capacity() * 8;
-    let mut v = std::mem::ManuallyDrop::new(v);
-    let bytes: Vec<u8> = unsafe { Vec::from_raw_parts(v.as_mut_ptr() as *mut u8, len, capacity) };
-    PooledBytes::from_vec(bytes)
+pub(crate) fn extract_direct_atoms(bytes: &[u8], wide: &mut [u16]) {
+    for (atom, pair) in wide.iter_mut().zip(bytes.chunks_exact(2)) {
+        *atom = u16::from_le_bytes([pair[0], pair[1]]);
+    }
 }
 
-fn pack_bits<const BITS: u8, const UNPACKED_SIZE: usize>(
-    section_data: &UnpackedData<UNPACKED_SIZE>,
-    direct: bool,
-    indices: &[u8],
-    packed: &mut [u64],
+pub(crate) fn extract_atoms<const UNPACKED_SIZE: usize>(
+    paletted: &PalettedData<UNPACKED_SIZE>,
+    wide: &mut [u16],
 ) {
-    let mask = (1u64 << BITS) - 1;
-    let mut unpacked_index = 0;
-    for cell in packed.iter_mut() {
-        let mut value = 0u64;
-        let mut bit_index = 0u8;
-        while bit_index < 64 {
-            if unpacked_index >= UNPACKED_SIZE {
-                break;
-            }
-            let mut slice = section_data[unpacked_index];
-            if !direct {
-                slice = indices[slice as usize] as u16;
-            }
-            value |= (slice as u64 & mask) << bit_index;
-            unpacked_index += 1;
-            bit_index += BITS;
+    let palette = &paletted.palette;
+    let direct = palette.direct();
+    let source_bits = palette.bits_per_entry;
+    let mask = (1u64 << source_bits) - 1;
+    let mut atoms = wide[..UNPACKED_SIZE].iter_mut();
+    'cells: for cell in paletted.packed_long_array.chunks_exact(8) {
+        let cell = u64::from_le_bytes(cell.try_into().unwrap());
+        let mut bit = 0;
+        while bit < 64 {
+            let Some(atom) = atoms.next() else {
+                break 'cells;
+            };
+            let slice = (cell >> bit) & mask;
+            *atom = if direct {
+                slice as u16
+            } else {
+                palette.palette[slice as usize]
+            };
+            bit += source_bits;
         }
-        *cell = value;
     }
 }
 
-pub(crate) fn pack_reused<const UNPACKED_SIZE: usize>(
-    section_data: &UnpackedData<UNPACKED_SIZE>,
-    scratch: &mut ReusablePackScratch,
-) -> PackedData<UNPACKED_SIZE> {
-    let palette = build_palette_reused(section_data, scratch);
-
-    if palette.length() == 1 {
-        return PackedData {
-            data: Data::Single(palette.palette[0]),
-        };
+pub(crate) fn remap_values(values: &mut [u8], remap: &[u8; 256]) {
+    for value in values.iter_mut() {
+        *value = remap[*value as usize];
     }
+}
 
-    let bits = palette.bits_per_entry as u8;
-    let direct = palette.direct();
-    let values_per_long = 64 / palette.bits_per_entry;
-    let packed_length = UNPACKED_SIZE.div_ceil(values_per_long);
-    let mut packed = vec![0u64; packed_length];
-
-    match bits {
-        1 => pack_bits::<1, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
-        2 => pack_bits::<2, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
-        4 => pack_bits::<4, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
-        8 => pack_bits::<8, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
-        _ => pack_bits::<16, UNPACKED_SIZE>(section_data, direct, &scratch.indices, &mut packed),
+pub(crate) fn pack_values(source_bits: usize, vals: &[u8], out: &mut [u8]) {
+    match source_bits {
+        8 => out.copy_from_slice(vals),
+        4 => {
+            for (byte, pair) in out.iter_mut().zip(vals.chunks_exact(2)) {
+                *byte = pair[0] | (pair[1] << 4);
+            }
+        }
+        2 => {
+            for (byte, quad) in out.iter_mut().zip(vals.chunks_exact(4)) {
+                *byte = quad[0] | (quad[1] << 2) | (quad[2] << 4) | (quad[3] << 6);
+            }
+        }
+        1 => {
+            for (byte, octet) in out.iter_mut().zip(vals.chunks_exact(8)) {
+                *byte = octet[0]
+                    | (octet[1] << 1)
+                    | (octet[2] << 2)
+                    | (octet[3] << 3)
+                    | (octet[4] << 4)
+                    | (octet[5] << 5)
+                    | (octet[6] << 6)
+                    | (octet[7] << 7);
+            }
+        }
+        _ => unreachable!("unsupported target bits per entry {source_bits}"),
     }
+}
 
-    PackedData {
-        data: Data::Paletted(PalettedData {
-            packed_long_array: vec_u64_to_bytes(packed),
-            palette,
-        }),
+pub(crate) fn pack_atoms_le(atoms: &[u16], out: &mut [u8]) {
+    for (pair, atom) in out.chunks_exact_mut(2).zip(atoms) {
+        let bytes = atom.to_le_bytes();
+        pair[0] = bytes[0];
+        pair[1] = bytes[1];
     }
 }
