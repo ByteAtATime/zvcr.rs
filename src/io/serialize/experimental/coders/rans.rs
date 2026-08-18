@@ -23,7 +23,11 @@ const fn div_magic(d: u32) -> DivEntry {
 }
 
 const DIV_TABLE: [DivEntry; M as usize + 1] = {
-    let mut t = [DivEntry { magic32: 0, shift: 0, m_sub: 0 }; M as usize + 1];
+    let mut t = [DivEntry {
+        magic32: 0,
+        shift: 0,
+        m_sub: 0,
+    }; M as usize + 1];
     let mut d = 1;
     while d <= M as usize {
         t[d] = div_magic(d as u32);
@@ -99,7 +103,9 @@ pub struct RansDecoder<'a> {
 
 impl<'a> RansDecoder<'a> {
     pub fn new(body: &'a [u8]) -> Self {
-        let head = body.get(..4).expect("rans decoder body must be at least 4 bytes");
+        let head = body
+            .get(..4)
+            .expect("rans decoder body must be at least 4 bytes");
         let x = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
         Self { x, body, ip: 4 }
     }
@@ -174,10 +180,21 @@ pub fn build_freq_table(data: &[u8]) -> ([u16; 256], [u16; 256]) {
 }
 
 pub fn build_decode_table(freq: &[u16; 256], start: &[u16; 256]) -> Vec<DecEntry> {
-    let mut table = vec![DecEntry { freq: 0, start: 0, sym: 0 }; M as usize];
+    let mut table = vec![
+        DecEntry {
+            freq: 0,
+            start: 0,
+            sym: 0
+        };
+        M as usize
+    ];
     for s in 0..256 {
         for k in 0..(freq[s] as usize) {
-            table[(start[s] as usize) + k] = DecEntry { freq: freq[s], start: start[s], sym: s as u8 };
+            table[(start[s] as usize) + k] = DecEntry {
+                freq: freq[s],
+                start: start[s],
+                sym: s as u8,
+            };
         }
     }
     table
@@ -185,7 +202,10 @@ pub fn build_decode_table(freq: &[u16; 256], start: &[u16; 256]) -> Vec<DecEntry
 
 #[cfg(test)]
 mod tests {
-    use super::{DIV_TABLE, L, M, RansDecoder, RansEncoder, X_MAX_BASE, build_decode_table, build_freq_table, fast_div};
+    use super::{
+        DIV_TABLE, L, M, RansDecoder, RansEncoder, X_MAX_BASE, build_decode_table,
+        build_freq_table, fast_div,
+    };
 
     fn check_streaming(data: &[u8]) {
         let (freq, start) = build_freq_table(data);
