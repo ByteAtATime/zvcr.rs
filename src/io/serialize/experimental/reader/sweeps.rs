@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::definitions::SEGMENTS_PER_REGION;
 use crate::io::serialize::error::ReadError;
 use crate::io::serialize::experimental::layout::{self, BUCKETS, Domain};
+use crate::io::serialize::experimental::models::spatial::{for_each_section_cell, section_origin};
 use crate::io::serialize::primitives::ByteCursor;
 use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
 use crate::region::palette::{DIRECT_PALETTE, Palette};
@@ -31,7 +32,13 @@ pub(super) fn sweep_domain<const UNPACKED_SIZE: usize>(
     tables: &DomainTables,
     slots: &RegionSlots,
     storages: &mut [Vec<PackedSnapshot<UNPACKED_SIZE>>],
+    level_zero_grid: Option<&[u16]>,
 ) -> Result<(), ReadError> {
+    if level_zero_grid.is_some() && UNPACKED_SIZE != crate::definitions::SECTION_SIZE_BLOCKS {
+        return Err(ReadError::Generic(
+            "modeled level zero grid requires block sized sections".to_string(),
+        ));
+    }
     let mut local_atoms: Vec<u16> = Vec::new();
     let mut snapshot_index = 0usize;
     let mut single_index = 0usize;
@@ -49,32 +56,39 @@ pub(super) fn sweep_domain<const UNPACKED_SIZE: usize>(
                 }
                 let timestamp = tables.timestamps[snapshot_index];
                 snapshot_index += 1;
-                let kind = if level == 0 {
-                    tables.descriptors[scan]
-                } else {
-                    let tag = tables.tags[delta_index];
-                    delta_index += 1;
-                    tag
-                };
-                let snapshot = if kind == 1 {
-                    let atom = tables.singles[single_index];
-                    single_index += 1;
+                let snapshot = if let Some(grid) = level_zero_grid.filter(|_| level == 0) {
                     PackedSnapshot {
-                        data: PackedData {
-                            data: Data::Single(atom),
-                        },
+                        data: pack_grid_section(grid, slot, section_index)?,
                         timestamp,
                     }
                 } else {
-                    PackedSnapshot {
-                        data: read_paletted_snapshot(
-                            meta_cursor,
-                            packed_cursors,
-                            domain,
-                            tables.palette_atoms,
-                            &mut local_atoms,
-                        )?,
-                        timestamp,
+                    let kind = if level == 0 {
+                        tables.descriptors[scan]
+                    } else {
+                        let tag = tables.tags[delta_index];
+                        delta_index += 1;
+                        tag
+                    };
+                    if kind == 1 {
+                        let atom = tables.singles[single_index];
+                        single_index += 1;
+                        PackedSnapshot {
+                            data: PackedData {
+                                data: Data::Single(atom),
+                            },
+                            timestamp,
+                        }
+                    } else {
+                        PackedSnapshot {
+                            data: read_paletted_snapshot(
+                                meta_cursor,
+                                packed_cursors,
+                                domain,
+                                tables.palette_atoms,
+                                &mut local_atoms,
+                            )?,
+                            timestamp,
+                        }
                     }
                 };
                 storages[storage_index][tables.starts[scan] as usize + level] = snapshot;
@@ -82,6 +96,23 @@ pub(super) fn sweep_domain<const UNPACKED_SIZE: usize>(
         }
     }
     Ok(())
+}
+
+fn pack_grid_section<const UNPACKED_SIZE: usize>(
+    grid: &[u16],
+    slot: usize,
+    section_index: usize,
+) -> Result<PackedData<UNPACKED_SIZE>, ReadError> {
+    if UNPACKED_SIZE != crate::definitions::SECTION_SIZE_BLOCKS {
+        return Err(ReadError::Generic(
+            "modeled grid section size mismatch".to_string(),
+        ));
+    }
+    let mut cells = [0u16; UNPACKED_SIZE];
+    for_each_section_cell(section_origin(slot, section_index), |idx, i| {
+        cells[i] = grid[idx];
+    });
+    Ok(PackedData::pack(&cells))
 }
 
 fn read_paletted_snapshot<const UNPACKED_SIZE: usize>(

@@ -4,10 +4,10 @@ use crate::region::palette::bits_per_entry;
 
 pub(crate) const HEADER_LENGTH: usize = EXTENSION.len() + 4;
 pub(crate) const PRESENCE_BYTES: usize = SEGMENTS_PER_REGION / 8;
-pub(crate) const PART_COUNT: usize = 16;
+pub(crate) const PART_COUNT: usize = 17;
 pub(crate) const BUCKETS: usize = 10;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Domain {
     Block,
     Biome,

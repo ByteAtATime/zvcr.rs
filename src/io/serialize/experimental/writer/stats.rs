@@ -9,6 +9,7 @@ static ENABLED: LazyLock<bool> = LazyLock::new(|| std::env::var_os("ZVCR_STREAM_
 
 const PART_NAMES: [&str; PART_COUNT] = [
     "metadata",
+    "model",
     "global_palette",
     "chunk_info",
     "timestamps",

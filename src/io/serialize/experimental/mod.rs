@@ -1,5 +1,6 @@
 pub mod coders;
 mod layout;
+mod models;
 mod pack;
 pub(crate) mod reader;
 pub(crate) mod writer;

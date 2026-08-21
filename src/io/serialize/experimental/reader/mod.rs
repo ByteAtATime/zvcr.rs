@@ -12,6 +12,7 @@ use crate::io::compression::decompress_zstd;
 use crate::io::file_location::EXTENSION;
 use crate::io::serialize::error::ReadError;
 use crate::io::serialize::experimental::layout::{self, BUCKETS, Domain, HEADER_LENGTH};
+use crate::io::serialize::experimental::models::context;
 use crate::io::serialize::primitives::ByteCursor;
 use crate::raw::{RegionData, SegmentData};
 use crate::region::delta::PackedDeltaData;
@@ -47,6 +48,10 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
 
     let block_tags = meta::read_delta_tags(&mut cursor, &block_counts, &block_descriptors)?;
     let biome_tags = meta::read_delta_tags(&mut cursor, &biome_counts, &biome_descriptors)?;
+    let model_length = cursor.read_u32()? as usize;
+    let model_payload = cursor.take_slice(model_length)?;
+    let block_grid = context::decode_grid(&model_payload, section_count)
+        .map_err(|e| ReadError::Generic(format!("block model decode failed: {e}")))?;
     let block_palette = meta::read_palette(&mut cursor)?;
     let biome_palette = meta::read_palette(&mut cursor)?;
 
@@ -56,15 +61,14 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
 
     let block_timestamps = meta::read_timestamps(&mut cursor, total_block_snapshots)?;
     let biome_timestamps = meta::read_timestamps(&mut cursor, total_biome_snapshots)?;
-    let block_singles =
-        meta::read_singles(&mut cursor, kind_count(&block_descriptors, &block_tags, 1))?;
+    let block_singles = meta::read_singles(&mut cursor, delta_kind_count(&block_tags, 1))?;
     let biome_singles =
         meta::read_singles(&mut cursor, kind_count(&biome_descriptors, &biome_tags, 1))?;
 
     let mut sizes = [0usize; BUCKETS];
     let mut probe = ByteCursor::new(cursor.data.clone());
     probe.pos = cursor.pos;
-    let block_paletted = kind_count(&block_descriptors, &block_tags, 2);
+    let block_paletted = delta_kind_count(&block_tags, 2);
     let biome_paletted = kind_count(&biome_descriptors, &biome_tags, 2);
     prescan::prescan_domain(&mut probe, Domain::Block, block_paletted, &mut sizes)?;
     prescan::prescan_domain(&mut probe, Domain::Biome, biome_paletted, &mut sizes)?;
@@ -93,6 +97,7 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
         },
         &slots,
         &mut storages.block,
+        Some(&block_grid),
     )?;
     sweeps::sweep_domain(
         &mut meta_cursor,
@@ -110,6 +115,7 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
         },
         &slots,
         &mut storages.biome,
+        None,
     )?;
 
     let mut tail_cursor = ByteCursor::new(cursor.data.clone());
@@ -226,6 +232,10 @@ fn placeholder_snapshot<const UNPACKED_SIZE: usize>() -> PackedSnapshot<UNPACKED
 
 fn kind_count(descriptors: &[u8], tags: &[u8], kind: u8) -> usize {
     descriptors.iter().filter(|&&d| d == kind).count() + tags.iter().filter(|&&t| t == kind).count()
+}
+
+fn delta_kind_count(tags: &[u8], kind: u8) -> usize {
+    tags.iter().filter(|&&t| t == kind).count()
 }
 
 fn ensure_timestamps_fit(

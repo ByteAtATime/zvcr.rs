@@ -37,9 +37,13 @@ fn write_domain_streams<const UNPACKED_SIZE: usize>(
     lut: &mut [u32; ATOM_COUNT],
 ) -> Result<(), String> {
     lut.fill(u32::MAX);
+    let modeled = domain == Domain::Block;
     for segment in data.segments.iter().flatten() {
         for section in sections(segment) {
-            for snapshot in section.snapshots() {
+            for (level, snapshot) in section.snapshots().iter().enumerate() {
+                if modeled && level == 0 {
+                    continue;
+                }
                 let Data::Paletted(paletted) = &snapshot.data.data else {
                     continue;
                 };
@@ -64,17 +68,14 @@ fn write_domain_streams<const UNPACKED_SIZE: usize>(
                 }
                 let snapshot = &snapshots[level];
                 put_u64_le(&mut streams.timestamps, snapshot.timestamp as u64);
+                if modeled && level == 0 {
+                    continue;
+                }
                 match &snapshot.data.data {
                     Data::Single(atom) => put_u16_le(&mut streams.singles, *atom),
                     Data::Paletted(paletted) => {
                         PACK.with(|pack| {
-                            emit_paletted(
-                                streams,
-                                domain,
-                                paletted,
-                                lut,
-                                &mut *pack.borrow_mut(),
-                            )
+                            emit_paletted(streams, domain, paletted, lut, &mut *pack.borrow_mut())
                         })?;
                     }
                 }
@@ -274,7 +275,10 @@ fn emit_from_atoms(
     }
     {
         let ReusablePackScratch {
-            values, wide, indices, ..
+            values,
+            wide,
+            indices,
+            ..
         } = scratch;
         let values = &mut values[..cells];
         for (value, atom) in values.iter_mut().zip(wide[..cells].iter()) {
@@ -350,7 +354,10 @@ fn emit_direct(
         None => {
             let packed_len = cells * 2;
             pack_atoms_le(&scratch.wide[..cells], &mut scratch.wide_out[..packed_len]);
-            put_bytes(&mut streams.buckets[bucket], &scratch.wide_out[..packed_len]);
+            put_bytes(
+                &mut streams.buckets[bucket],
+                &scratch.wide_out[..packed_len],
+            );
         }
     }
     Ok(())

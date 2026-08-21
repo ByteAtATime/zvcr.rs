@@ -8,7 +8,8 @@ use crate::io::file_location::EXTENSION;
 use crate::io::serialize::experimental::layout::{
     self, BUCKETS, Domain, PART_COUNT, PRESENCE_BYTES,
 };
-use crate::io::serialize::primitives::{put_bytes, put_u8, put_u16_le, put_u64_le};
+use crate::io::serialize::experimental::models::context;
+use crate::io::serialize::primitives::{put_bytes, put_u8, put_u16_le, put_u32_le, put_u64_le};
 use crate::raw::RegionData;
 
 pub(crate) fn serialize_region_data(data: &RegionData, level: i32) -> Result<Vec<u8>, String> {
@@ -24,6 +25,9 @@ pub(crate) fn serialize_region_data(data: &RegionData, level: i32) -> Result<Vec
     put_bytes(&mut streams.metadata, &presence);
 
     descriptors::write(&mut streams, data, section_count)?;
+    let model = context::encode_region(data, section_count).map_err(|e| e.to_string())?;
+    put_u32_le(&mut streams.model, model.len() as u32);
+    put_bytes(&mut streams.model, &model);
     snapshots::write_domain(&mut streams, data, Domain::Block, |segment| {
         &segment.block_sections
     })?;
@@ -48,6 +52,7 @@ pub(crate) fn serialize_region_data(data: &RegionData, level: i32) -> Result<Vec
 
 struct Streams {
     metadata: Vec<u8>,
+    model: Vec<u8>,
     global_palette: Vec<u8>,
     chunk_info: Vec<u8>,
     timestamps: Vec<u8>,
@@ -62,6 +67,7 @@ impl Streams {
     fn new() -> Self {
         Self {
             metadata: Vec::new(),
+            model: Vec::new(),
             global_palette: Vec::new(),
             chunk_info: Vec::new(),
             timestamps: Vec::new(),
@@ -76,6 +82,7 @@ impl Streams {
     fn parts(&self) -> [&[u8]; PART_COUNT] {
         [
             &self.metadata,
+            &self.model,
             &self.global_palette,
             &self.chunk_info,
             &self.timestamps,
