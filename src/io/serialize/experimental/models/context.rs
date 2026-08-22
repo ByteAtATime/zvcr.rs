@@ -7,7 +7,7 @@ use crate::io::serialize::experimental::models::predictor::{
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
-    SECTION_SIDE, SEGMENT_SIDE, SIDE, SectionPos, VoxelPos, fill_section, fill_uniform,
+    SECTION_SIDE, SEGMENT_SIDE, SIDE, SectionPos, Y_STRIDE, Z_STRIDE, fill_section, fill_uniform,
     for_each_section_cell, section_origin,
 };
 use crate::io::serialize::primitives::{
@@ -50,28 +50,27 @@ impl Modeler {
         let mut neighbors = [NONE; CHAIN_SLOTS];
         let mut candidates = [NONE; CHAIN_SLOTS];
         for local_y in 0..SECTION_SIDE {
+            let y = origin_y + local_y;
             for local_z in 0..SECTION_SIDE {
+                let z = origin_z + local_z;
+                let row = y * Y_STRIDE + z * Z_STRIDE + origin_x;
                 for local_x in 0..SECTION_SIDE {
-                    let voxel = VoxelPos {
-                        x: origin_x + local_x,
-                        y: origin_y + local_y,
-                        z: origin_z + local_z,
-                    };
-                    let idx = voxel.index();
+                    let x = origin_x + local_x;
+                    let idx = row + local_x;
                     let truth = voxels[idx];
                     let head = self.predictor.encode_head(
                         encoder,
                         voxels,
-                        voxel,
+                        idx,
+                        x,
+                        y,
+                        z,
                         pos.section_y,
                         palette_bits,
                         &mut neighbors,
                         truth,
                     );
-                    let bit = head.bit;
-                    let value = if bit != 0 {
-                        head.primary_value
-                    } else {
+                    if head.bit == 0 {
                         self.encode_residual(
                             encoder,
                             truth,
@@ -83,9 +82,8 @@ impl Modeler {
                                 palette_bits,
                                 section_y: pos.section_y,
                             },
-                        )?
-                    };
-                    voxels[idx] = value;
+                        )?;
+                    }
                 }
             }
         }
@@ -104,24 +102,25 @@ impl Modeler {
         let mut neighbors = [NONE; CHAIN_SLOTS];
         let mut candidates = [NONE; CHAIN_SLOTS];
         for local_y in 0..SECTION_SIDE {
+            let y = origin_y + local_y;
             for local_z in 0..SECTION_SIDE {
+                let z = origin_z + local_z;
+                let row = y * Y_STRIDE + z * Z_STRIDE + origin_x;
                 for local_x in 0..SECTION_SIDE {
-                    let voxel = VoxelPos {
-                        x: origin_x + local_x,
-                        y: origin_y + local_y,
-                        z: origin_z + local_z,
-                    };
-                    let idx = voxel.index();
+                    let x = origin_x + local_x;
+                    let idx = row + local_x;
                     let head = self.predictor.decode_head(
                         decoder,
                         voxels,
-                        voxel,
+                        idx,
+                        x,
+                        y,
+                        z,
                         pos.section_y,
                         palette_bits,
                         &mut neighbors,
                     );
-                    let bit = head.bit;
-                    let value = if bit != 0 {
+                    let value = if head.bit != 0 {
                         head.primary_value
                     } else {
                         self.decode_residual(

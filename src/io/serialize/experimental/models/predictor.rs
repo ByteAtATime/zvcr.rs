@@ -1,7 +1,5 @@
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
-use crate::io::serialize::experimental::models::spatial::{
-    SECTION_SIDE, SIDE, VoxelPos, Y_STRIDE, Z_STRIDE,
-};
+use crate::io::serialize::experimental::models::spatial::{SECTION_SIDE, SIDE, Y_STRIDE, Z_STRIDE};
 
 pub(super) const NONE: u16 = u16::MAX;
 const FIRST_ORDER: usize = 9;
@@ -196,9 +194,14 @@ pub(super) fn adapt(counter: &mut u16, bit: u32) {
 }
 
 #[inline(always)]
-pub(super) fn gather_neighbors(voxels: &[u16], pos: VoxelPos, neighbors: &mut [u16; CHAIN_SLOTS]) {
-    let VoxelPos { x, y, z } = pos;
-    let idx = pos.index();
+pub(super) fn gather_neighbors(
+    voxels: &[u16],
+    idx: usize,
+    x: usize,
+    y: usize,
+    z: usize,
+    neighbors: &mut [u16; CHAIN_SLOTS],
+) {
     let west = x > 0;
     let lower = y > 0;
     let north = z > 0;
@@ -458,13 +461,16 @@ impl Predictor {
         &mut self,
         encoder: &mut Encoder,
         voxels: &[u16],
-        pos: VoxelPos,
+        idx: usize,
+        x: usize,
+        y: usize,
+        z: usize,
         section_y: usize,
         palette_bits: usize,
         neighbors: &mut [u16; CHAIN_SLOTS],
         truth: u16,
     ) -> HeadLite {
-        gather_neighbors(voxels, pos, neighbors);
+        gather_neighbors(voxels, idx, x, y, z, neighbors);
         let (primary_value, mask) = select_primary_value(neighbors);
         let bit = (truth == primary_value) as u32;
         let ctx = primary_contexts(
@@ -511,12 +517,15 @@ impl Predictor {
         &mut self,
         decoder: &mut Decoder,
         voxels: &[u16],
-        pos: VoxelPos,
+        idx: usize,
+        x: usize,
+        y: usize,
+        z: usize,
         section_y: usize,
         palette_bits: usize,
         neighbors: &mut [u16; CHAIN_SLOTS],
     ) -> HeadLite {
-        gather_neighbors(voxels, pos, neighbors);
+        gather_neighbors(voxels, idx, x, y, z, neighbors);
         let (primary_value, mask) = select_primary_value(neighbors);
         let ctx = primary_contexts(
             neighbors,
