@@ -271,7 +271,33 @@ const fn build_weight_lut() -> [u32; 512] {
 
 static WEIGHT_LUT: [u32; 512] = build_weight_lut();
 
+const fn build_key_lut() -> [u32; 512] {
+    let mut lut = [0u32; 512];
+    let mut mask = 0usize;
+    while mask < 512 {
+        lut[mask] = (WEIGHT_LUT[mask] << 5) | (mask as u32).leading_zeros();
+        mask += 1;
+    }
+    lut
+}
+
+static KEY_LUT: [u32; 512] = build_key_lut();
+
+#[inline(always)]
 fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))]
+    let full = {
+        use core::arch::x86_64::{
+            _mm256_castsi128_si256, _mm256_insert_epi16, _mm_loadu_si128,
+        };
+        let low = unsafe { _mm_loadu_si128(neighbors.as_ptr().cast()) };
+        let wide = unsafe { _mm256_castsi128_si256(low) };
+        unsafe { _mm256_insert_epi16(wide, neighbors[FIRST_ORDER - 1] as i16, 8) }
+    };
     let slice = &neighbors[..FIRST_ORDER];
     let mut seen = 0u32;
     let mut best_val = NONE;
@@ -284,18 +310,40 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
         }
 
         let val = slice[i];
-        let mut mask = 0u32;
-        for j in 0..FIRST_ORDER {
-            mask |= ((slice[j] == val) as u32) << j;
-        }
+
+        #[cfg(all(
+            target_arch = "x86_64",
+            target_feature = "avx512f",
+            target_feature = "avx512bw"
+        ))]
+        let mask = unsafe {
+            use core::arch::x86_64::{_mm256_mask_cmpeq_epi16_mask, _mm256_set1_epi16};
+            _mm256_mask_cmpeq_epi16_mask(0x1FF, full, _mm256_set1_epi16(val as i16)) as u32
+        };
+
+        #[cfg(not(all(
+            target_arch = "x86_64",
+            target_feature = "avx512f",
+            target_feature = "avx512bw"
+        )))]
+        let mask = {
+            let mut mask = 0u32;
+            for j in 0..FIRST_ORDER {
+                mask |= ((slice[j] == val) as u32) << j;
+            }
+            mask
+        };
 
         seen |= mask;
-        let key = (WEIGHT_LUT[mask as usize] << 5) | mask.leading_zeros();
+        let key = KEY_LUT[mask as usize];
 
         if key > best_key {
             best_key = key;
             best_val = val;
             best_mask = mask;
+            if mask == 0x1FF {
+                break;
+            }
         }
     }
 
@@ -322,6 +370,46 @@ pub(super) fn adapt_weights(weights: &mut [i32], probs: &[u32], bit: u32, mixed:
     for (weight, &prob) in weights.iter_mut().zip(probs) {
         *weight =
             (*weight + ((error * STRETCH[prob as usize]) >> 13)).clamp(-WEIGHT_LIMIT, WEIGHT_LIMIT);
+    }
+}
+
+#[inline]
+pub(super) fn stretch_probs(probs: &[u32; MIX_INPUTS]) -> [i32; MIX_INPUTS] {
+    let mut stretched = [0i32; MIX_INPUTS];
+    for (stretched, &prob) in stretched.iter_mut().zip(probs) {
+        *stretched = unsafe { *STRETCH.get_unchecked(prob as usize) };
+    }
+    stretched
+}
+
+#[inline]
+pub(super) fn mix_stretched(weights: &[i32; MIX_INPUTS], stretched: &[i32; MIX_INPUTS]) -> u32 {
+    let p0 = weights[0].wrapping_mul(stretched[0]);
+    let p1 = weights[1].wrapping_mul(stretched[1]);
+    let p2 = weights[2].wrapping_mul(stretched[2]);
+    let p3 = weights[3].wrapping_mul(stretched[3]);
+    let p4 = weights[4].wrapping_mul(stretched[4]);
+    let p5 = weights[5].wrapping_mul(stretched[5]);
+    let p6 = weights[6].wrapping_mul(stretched[6]);
+    let p7 = weights[7].wrapping_mul(stretched[7]);
+    let p8 = weights[8].wrapping_mul(stretched[8]);
+    let p9 = weights[9].wrapping_mul(stretched[9]);
+    let dot = ((p0 as i64 + p1 as i64) + (p2 as i64 + p3 as i64))
+        + ((p4 as i64 + p5 as i64) + (p6 as i64 + p7 as i64))
+        + (p8 as i64 + p9 as i64);
+    squash((dot >> 16) as i32) as u32
+}
+
+#[inline]
+pub(super) fn adapt_weights_stretched(
+    weights: &mut [i32; MIX_INPUTS],
+    stretched: &[i32; MIX_INPUTS],
+    bit: u32,
+    mixed: u32,
+) {
+    let error = bit as i32 * 4096 - mixed as i32;
+    for (weight, &value) in weights.iter_mut().zip(stretched) {
+        *weight = (*weight + ((error * value) >> 13)).clamp(-WEIGHT_LIMIT, WEIGHT_LIMIT);
     }
 }
 
@@ -378,6 +466,7 @@ impl Predictor {
     ) -> HeadLite {
         gather_neighbors(voxels, pos, neighbors);
         let (primary_value, mask) = select_primary_value(neighbors);
+        let bit = (truth == primary_value) as u32;
         let ctx = primary_contexts(
             neighbors,
             primary_value as u32,
@@ -388,15 +477,26 @@ impl Predictor {
         );
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
-            probs[k] = self.primary[k][ctx.idx[k] as usize] as u32;
+            probs[k] =
+                unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx.idx[k] as usize) } as u32;
         }
-        let mixed = mix_logits(&self.weights[palette_bits], &probs);
-        let bit = (truth == primary_value) as u32;
-        encoder.encode(mixed, bit);
+        let stretched = stretch_probs(&probs);
+        let target = if bit != 0 { PROB_MAX } else { 0 };
         for k in 0..MIX_INPUTS {
-            adapt(&mut self.primary[k][ctx.idx[k] as usize], bit);
+            let current = probs[k] as i32;
+            unsafe {
+                *self.primary.get_unchecked_mut(k).get_unchecked_mut(ctx.idx[k] as usize) =
+                    (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
+            }
         }
-        adapt_weights(&mut self.weights[palette_bits], &probs, bit, mixed);
+        let mixed = mix_stretched(unsafe { self.weights.get_unchecked(palette_bits) }, &stretched);
+        encoder.encode(mixed, bit);
+        adapt_weights_stretched(
+            unsafe { self.weights.get_unchecked_mut(palette_bits) },
+            &stretched,
+            bit,
+            mixed,
+        );
         self.run = if bit != 0 { (self.run + 1).min(255) } else { 0 };
         HeadLite {
             primary_value,
@@ -428,14 +528,26 @@ impl Predictor {
         );
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
-            probs[k] = self.primary[k][ctx.idx[k] as usize] as u32;
+            probs[k] =
+                unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx.idx[k] as usize) } as u32;
         }
-        let mixed = mix_logits(&self.weights[palette_bits], &probs);
+        let stretched = stretch_probs(&probs);
+        let mixed = mix_stretched(unsafe { self.weights.get_unchecked(palette_bits) }, &stretched);
         let bit = decoder.decode(mixed);
+        let target = if bit != 0 { PROB_MAX } else { 0 };
         for k in 0..MIX_INPUTS {
-            adapt(&mut self.primary[k][ctx.idx[k] as usize], bit);
+            let current = probs[k] as i32;
+            unsafe {
+                *self.primary.get_unchecked_mut(k).get_unchecked_mut(ctx.idx[k] as usize) =
+                    (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
+            }
         }
-        adapt_weights(&mut self.weights[palette_bits], &probs, bit, mixed);
+        adapt_weights_stretched(
+            unsafe { self.weights.get_unchecked_mut(palette_bits) },
+            &stretched,
+            bit,
+            mixed,
+        );
         self.run = if bit != 0 { (self.run + 1).min(255) } else { 0 };
         HeadLite {
             primary_value,
