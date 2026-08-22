@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
     SECTION_SIDE, SIDE, VoxelPos, Y_STRIDE, Z_STRIDE,
@@ -147,7 +145,7 @@ fn primary_contexts(
     }
 }
 
-fn squash(logit: i32) -> i32 {
+const fn squash(logit: i32) -> i32 {
     const SIGMOID_TABLE: [i32; 33] = [
         1, 2, 3, 6, 10, 16, 27, 45, 73, 120, 194, 310, 488, 747, 1101, 1546, 2047, 2549, 2994,
         3348, 3607, 3785, 3901, 3975, 4024, 4050, 4068, 4079, 4085, 4089, 4092, 4093, 4094,
@@ -166,9 +164,10 @@ fn squash(logit: i32) -> i32 {
         >> 7
 }
 
-fn build_stretch() -> [i32; 4096] {
+const fn build_stretch() -> [i32; 4096] {
     let mut stretch = [0i32; 4096];
-    for (prob, entry) in stretch.iter_mut().enumerate().take(4095).skip(1) {
+    let mut prob = 1usize;
+    while prob < 4095 {
         let target = prob as i32;
         let (mut lo, mut hi) = (-2047i32, 2047i32);
         while lo < hi {
@@ -179,14 +178,15 @@ fn build_stretch() -> [i32; 4096] {
                 hi = mid;
             }
         }
-        *entry = lo;
+        stretch[prob] = lo;
+        prob += 1;
     }
     stretch[0] = -2047;
     stretch[4095] = 2047;
     stretch
 }
 
-static STRETCH: LazyLock<[i32; 4096]> = LazyLock::new(build_stretch);
+static STRETCH: [i32; 4096] = build_stretch();
 
 #[inline]
 pub(super) fn adapt(counter: &mut u16, bit: u32) {
@@ -195,7 +195,7 @@ pub(super) fn adapt(counter: &mut u16, bit: u32) {
     *counter = (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
 }
 
-#[inline]
+#[inline(always)]
 pub(super) fn gather_neighbors(voxels: &[u16], pos: VoxelPos, neighbors: &mut [u16; CHAIN_SLOTS]) {
     let VoxelPos { x, y, z } = pos;
     let idx = pos.index();
@@ -378,8 +378,14 @@ impl Predictor {
     ) -> HeadLite {
         gather_neighbors(voxels, pos, neighbors);
         let (primary_value, mask) = select_primary_value(neighbors);
-        let ctx =
-            primary_contexts(neighbors, primary_value as u32, mask, self.run, section_y, palette_bits);
+        let ctx = primary_contexts(
+            neighbors,
+            primary_value as u32,
+            mask,
+            self.run,
+            section_y,
+            palette_bits,
+        );
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
             probs[k] = self.primary[k][ctx.idx[k] as usize] as u32;
@@ -412,8 +418,14 @@ impl Predictor {
     ) -> HeadLite {
         gather_neighbors(voxels, pos, neighbors);
         let (primary_value, mask) = select_primary_value(neighbors);
-        let ctx =
-            primary_contexts(neighbors, primary_value as u32, mask, self.run, section_y, palette_bits);
+        let ctx = primary_contexts(
+            neighbors,
+            primary_value as u32,
+            mask,
+            self.run,
+            section_y,
+            palette_bits,
+        );
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
             probs[k] = self.primary[k][ctx.idx[k] as usize] as u32;
