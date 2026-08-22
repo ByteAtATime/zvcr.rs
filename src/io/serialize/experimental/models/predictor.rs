@@ -53,6 +53,7 @@ const DIRECTION_MULTS: [u32; FIRST_ORDER] = [
 const FORWARD_NEIGHBORHOOD_SEED: u32 = 0x1F12_3BB5;
 const REVERSE_NEIGHBORHOOD_SEED: u32 = 0x2B7E_1516;
 
+#[cfg(test)]
 const SUBSET_CONTEXTS: [(u32, &[usize]); 4] = [
     (0x9E37_79B9, &[9, 10, 11]),
     (0x85EB_CA6B, &[3, 6, 7]),
@@ -67,30 +68,82 @@ pub(super) fn combine(hash: u32, value: u32) -> u32 {
         .wrapping_mul(HASH_FINALIZE)
 }
 
-fn directional_hash<const REVERSED: bool>(seed: u32, neighbors: &[u16; CHAIN_SLOTS]) -> u32 {
-    let mut hash = seed;
-    for step in 0..FIRST_ORDER {
-        let slot = if REVERSED {
-            FIRST_ORDER - 1 - step
-        } else {
-            step
-        };
-        hash = combine(
-            hash,
-            (neighbors[slot] as u32).wrapping_mul(DIRECTION_MULTS[slot]),
-        );
-    }
-    hash
-}
+#[inline]
+fn primary_contexts(
+    neighbors: &[u16; CHAIN_SLOTS],
+    primary_value: u32,
+    mask: u32,
+    run: u32,
+    section_y: usize,
+    palette_bits: usize,
+) -> PrimaryCtx {
+    let n = |slot: usize| (neighbors[slot] as u32).wrapping_mul(DIRECTION_MULTS[slot]);
+    let mut fwd = FORWARD_NEIGHBORHOOD_SEED;
+    let mut rev = REVERSE_NEIGHBORHOOD_SEED;
+    let mut distance_two = 0x9E37_79B9;
+    let mut diagonal = 0x85EB_CA6B;
+    let mut axial = 0xC2B2_AE35;
+    let mut lower_pair = 0x27D4_EB2F;
 
-fn subset_hashes(neighbors: &[u16; CHAIN_SLOTS], primary_value: u32) -> [u32; 4] {
-    SUBSET_CONTEXTS.map(|(seed, slots)| {
-        let mut hash = seed;
-        for &slot in slots {
-            hash = combine(hash, neighbors[slot] as u32);
-        }
-        combine(hash, primary_value)
-    })
+    fwd = combine(fwd, n(0));
+    rev = combine(rev, n(8));
+    distance_two = combine(distance_two, neighbors[9] as u32);
+    rev = combine(rev, n(7));
+    lower_pair = combine(lower_pair, neighbors[1] as u32);
+    fwd = combine(fwd, n(1));
+    diagonal = combine(diagonal, neighbors[3] as u32);
+    axial = combine(axial, neighbors[0] as u32);
+
+    rev = combine(rev, n(6));
+    distance_two = combine(distance_two, neighbors[10] as u32);
+    fwd = combine(fwd, n(2));
+    lower_pair = combine(lower_pair, neighbors[2] as u32);
+    diagonal = combine(diagonal, neighbors[6] as u32);
+    axial = combine(axial, neighbors[1] as u32);
+
+    fwd = combine(fwd, n(3));
+    rev = combine(rev, n(5));
+    distance_two = combine(distance_two, neighbors[11] as u32);
+    diagonal = combine(diagonal, neighbors[7] as u32);
+    axial = combine(axial, neighbors[2] as u32);
+
+    rev = combine(rev, n(4));
+    fwd = combine(fwd, n(4));
+
+    fwd = combine(fwd, n(5));
+    rev = combine(rev, n(3));
+
+    rev = combine(rev, n(2));
+    fwd = combine(fwd, n(6));
+
+    fwd = combine(fwd, n(7));
+    rev = combine(rev, n(1));
+
+    rev = combine(rev, n(0));
+    fwd = combine(fwd, n(8));
+
+    distance_two = combine(distance_two, primary_value);
+    diagonal = combine(diagonal, primary_value);
+    axial = combine(axial, primary_value);
+    lower_pair = combine(lower_pair, primary_value);
+    let neighborhood = combine(fwd, primary_value);
+    let rotated_neighborhood = combine(rev, primary_value);
+    let value_scaled_hash = combine(neighborhood, primary_value.wrapping_mul(3));
+    PrimaryCtx {
+        idx: [
+            (neighborhood & PRIMARY_TABLE_MASK) as usize,
+            (rotated_neighborhood & PRIMARY_TABLE_MASK) as usize,
+            (distance_two & PRIMARY_TABLE_MASK) as usize,
+            ((mask as usize) << 8) | run.min(255) as usize,
+            (combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK) as usize,
+            (value_scaled_hash & PRIMARY_TABLE_MASK) as usize,
+            (section_y << 5) | palette_bits,
+            (diagonal & PRIMARY_TABLE_MASK) as usize,
+            (axial & PRIMARY_TABLE_MASK) as usize,
+            (lower_pair & PRIMARY_TABLE_MASK) as usize,
+        ],
+        hash: neighborhood,
+    }
 }
 
 fn squash(logit: i32) -> i32 {
@@ -253,41 +306,6 @@ pub(super) struct PrimaryCtx {
     pub(super) hash: u32,
 }
 
-fn primary_contexts(
-    neighbors: &[u16; CHAIN_SLOTS],
-    primary_value: u32,
-    mask: u32,
-    run: u32,
-    section_y: usize,
-    palette_bits: usize,
-) -> PrimaryCtx {
-    let neighborhood = combine(
-        directional_hash::<false>(FORWARD_NEIGHBORHOOD_SEED, neighbors),
-        primary_value,
-    );
-    let rotated_neighborhood = combine(
-        directional_hash::<true>(REVERSE_NEIGHBORHOOD_SEED, neighbors),
-        primary_value,
-    );
-    let [distance_two, diagonal, axial, lower_pair] = subset_hashes(neighbors, primary_value);
-    let value_scaled_hash = combine(neighborhood, primary_value.wrapping_mul(3));
-    PrimaryCtx {
-        idx: [
-            (neighborhood & PRIMARY_TABLE_MASK) as usize,
-            (rotated_neighborhood & PRIMARY_TABLE_MASK) as usize,
-            (distance_two & PRIMARY_TABLE_MASK) as usize,
-            ((mask as usize) << 8) | run.min(255) as usize,
-            (combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK) as usize,
-            (value_scaled_hash & PRIMARY_TABLE_MASK) as usize,
-            (section_y << 5) | palette_bits,
-            (diagonal & PRIMARY_TABLE_MASK) as usize,
-            (axial & PRIMARY_TABLE_MASK) as usize,
-            (lower_pair & PRIMARY_TABLE_MASK) as usize,
-        ],
-        hash: neighborhood,
-    }
-}
-
 #[inline]
 pub(super) fn mix_logits(weights: &[i32], probs: &[u32]) -> u32 {
     let mut dot = 0i64;
@@ -307,30 +325,29 @@ pub(super) fn adapt_weights(weights: &mut [i32], probs: &[u32], bit: u32, mixed:
 }
 
 pub(super) struct Predictor {
-    pub(super) primary: Vec<Box<[u16]>>,
-    pub(super) chain: Vec<Box<[u16]>>,
-    pub(super) tree: Vec<Box<[u16]>>,
+    pub(super) primary: Box<[[u16; PRIMARY_TABLE_SIZE]; MIX_INPUTS]>,
+    pub(super) chain: Box<[[u16; CHAIN_TABLE_SIZE]; CHAIN_SLOTS]>,
+    pub(super) tree: Box<[[u16; PRIMARY_TABLE_SIZE]; 2]>,
     pub(super) tree_band: Box<[u16]>,
     pub(super) weights: Box<[[i32; MIX_INPUTS]; MAX_BIT_DEPTH + 1]>,
     pub(super) tree_weights: Box<[[i32; TREE_INPUTS]; MAX_BIT_DEPTH + 1]>,
     pub(super) run: u32,
 }
 
-fn filled_counters(len: usize) -> Box<[u16]> {
-    vec![PROB_HALF; len].into_boxed_slice()
-}
-
-fn filled_tables(count: usize, len: usize) -> Vec<Box<[u16]>> {
-    (0..count).map(|_| filled_counters(len)).collect()
+fn filled_tables<const N: usize, const M: usize>(value: u16) -> Box<[[u16; N]; M]> {
+    let mut flat = vec![value; N * M];
+    let ptr = flat.as_mut_ptr();
+    std::mem::forget(flat);
+    unsafe { Box::from_raw(ptr.cast::<[[u16; N]; M]>()) }
 }
 
 impl Predictor {
     pub(super) fn new() -> Self {
         Self {
-            primary: filled_tables(MIX_INPUTS, PRIMARY_TABLE_SIZE),
-            chain: filled_tables(CHAIN_SLOTS, CHAIN_TABLE_SIZE),
-            tree: filled_tables(2, PRIMARY_TABLE_SIZE),
-            tree_band: filled_counters(TREE_BAND_TABLE_SIZE),
+            primary: filled_tables::<PRIMARY_TABLE_SIZE, MIX_INPUTS>(PROB_HALF),
+            chain: filled_tables::<CHAIN_TABLE_SIZE, CHAIN_SLOTS>(PROB_HALF),
+            tree: filled_tables::<PRIMARY_TABLE_SIZE, 2>(PROB_HALF),
+            tree_band: Box::new([PROB_HALF; TREE_BAND_TABLE_SIZE]),
             weights: Box::new([[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS]; MAX_BIT_DEPTH + 1]),
             tree_weights: Box::new([[TREE_MIXER_SEED_WEIGHT; TREE_INPUTS]; MAX_BIT_DEPTH + 1]),
             run: 0,
@@ -367,12 +384,8 @@ impl Predictor {
             palette_bits,
         );
         let mut probs = [0u32; MIX_INPUTS];
-        for ((prob, table), &index) in probs
-            .iter_mut()
-            .zip(self.primary.iter())
-            .zip(ctx.idx.iter())
-        {
-            *prob = table[index] as u32;
+        for k in 0..MIX_INPUTS {
+            probs[k] = self.primary[k][ctx.idx[k]] as u32;
         }
         let mixed = mix_logits(&self.weights[palette_bits], &probs);
         Head {
@@ -385,8 +398,8 @@ impl Predictor {
     }
 
     pub(super) fn learn_primary(&mut self, head: &Head, palette_bits: usize, bit: u32) {
-        for (table, &index) in self.primary.iter_mut().zip(head.ctx.idx.iter()) {
-            adapt(&mut table[index], bit);
+        for (k, &index) in head.ctx.idx.iter().enumerate() {
+            adapt(&mut self.primary[k][index], bit);
         }
         adapt_weights(
             &mut self.weights[palette_bits],
@@ -395,5 +408,126 @@ impl Predictor {
             head.mixed,
         );
         self.run = if bit != 0 { (self.run + 1).min(255) } else { 0 };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference_directional_hash<const REVERSED: bool>(
+        seed: u32,
+        neighbors: &[u16; CHAIN_SLOTS],
+    ) -> u32 {
+        let mut hash = seed;
+        for step in 0..FIRST_ORDER {
+            let slot = if REVERSED {
+                FIRST_ORDER - 1 - step
+            } else {
+                step
+            };
+            hash = combine(
+                hash,
+                (neighbors[slot] as u32).wrapping_mul(DIRECTION_MULTS[slot]),
+            );
+        }
+        hash
+    }
+
+    fn reference_subset_hashes(neighbors: &[u16; CHAIN_SLOTS], primary_value: u32) -> [u32; 4] {
+        SUBSET_CONTEXTS.map(|(seed, slots)| {
+            let mut hash = seed;
+            for &slot in slots {
+                hash = combine(hash, neighbors[slot] as u32);
+            }
+            combine(hash, primary_value)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reference_primary_contexts(
+        neighbors: &[u16; CHAIN_SLOTS],
+        primary_value: u32,
+        mask: u32,
+        run: u32,
+        section_y: usize,
+        palette_bits: usize,
+    ) -> PrimaryCtx {
+        let neighborhood = combine(
+            reference_directional_hash::<false>(FORWARD_NEIGHBORHOOD_SEED, neighbors),
+            primary_value,
+        );
+        let rotated_neighborhood = combine(
+            reference_directional_hash::<true>(REVERSE_NEIGHBORHOOD_SEED, neighbors),
+            primary_value,
+        );
+        let [distance_two, diagonal, axial, lower_pair] =
+            reference_subset_hashes(neighbors, primary_value);
+        let value_scaled_hash = combine(neighborhood, primary_value.wrapping_mul(3));
+        PrimaryCtx {
+            idx: [
+                (neighborhood & PRIMARY_TABLE_MASK) as usize,
+                (rotated_neighborhood & PRIMARY_TABLE_MASK) as usize,
+                (distance_two & PRIMARY_TABLE_MASK) as usize,
+                ((mask as usize) << 8) | run.min(255) as usize,
+                (combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK) as usize,
+                (value_scaled_hash & PRIMARY_TABLE_MASK) as usize,
+                (section_y << 5) | palette_bits,
+                (diagonal & PRIMARY_TABLE_MASK) as usize,
+                (axial & PRIMARY_TABLE_MASK) as usize,
+                (lower_pair & PRIMARY_TABLE_MASK) as usize,
+            ],
+            hash: neighborhood,
+        }
+    }
+
+    #[test]
+    fn context_hashes_match_reference() {
+        let mut state = 0x1234_5678u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut neighbors = [NONE; CHAIN_SLOTS];
+        for _ in 0..100_000 {
+            for slot in 0..CHAIN_SLOTS {
+                let pick = next() % 10;
+                neighbors[slot] = match pick {
+                    0 => NONE,
+                    1..=2 => (next() % 9) as u16,
+                    _ => (next() % 60_001) as u16,
+                };
+            }
+            let primary_value = if next() % 8 == 0 {
+                NONE as u32
+            } else {
+                (next() % 60_001) as u32
+            };
+            let mask = next() as u32;
+            let run = (next() % 256) as u32;
+            let section_y = (next() % 1024) as usize;
+            let palette_bits = (next() % 17) as usize;
+
+            let new_ctx = primary_contexts(
+                &neighbors,
+                primary_value,
+                mask,
+                run,
+                section_y,
+                palette_bits,
+            );
+            let old_ctx = reference_primary_contexts(
+                &neighbors,
+                primary_value,
+                mask,
+                run,
+                section_y,
+                palette_bits,
+            );
+            assert_eq!(new_ctx.idx, old_ctx.idx, "idx mismatch");
+            assert_eq!(new_ctx.hash, old_ctx.hash, "hash mismatch");
+        }
     }
 }
