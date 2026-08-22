@@ -221,8 +221,8 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
     let slice = &neighbors[..FIRST_ORDER];
     let mut seen = 0u32;
     let mut best_val = NONE;
-    let mut best_score = 0u32;
-    let mut best_last_slot = usize::MAX;
+    let mut best_key = 0u32;
+    let mut best_mask = 0x1FF;
 
     for i in 0..FIRST_ORDER {
         if (seen & (1 << i)) != 0 || slice[i] == NONE {
@@ -230,27 +230,22 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
         }
 
         let val = slice[i];
-        let mut mask = 1 << i;
-        let mut last_slot = i;
-
-        for j in (i + 1)..FIRST_ORDER {
-            if slice[j] == val {
-                mask |= 1 << j;
-                last_slot = j;
-            }
+        let mut mask = 0u32;
+        for j in 0..FIRST_ORDER {
+            mask |= ((slice[j] == val) as u32) << j;
         }
 
         seen |= mask;
-        let score = WEIGHT_LUT[mask as usize];
+        let key = (WEIGHT_LUT[mask as usize] << 5) | mask.leading_zeros();
 
-        if score > best_score || (score == best_score && last_slot < best_last_slot) {
-            best_score = score;
+        if key > best_key {
+            best_key = key;
             best_val = val;
-            best_last_slot = last_slot;
+            best_mask = mask;
         }
     }
 
-    best_val
+    (best_val, best_mask)
 }
 
 pub(super) struct PrimaryCtx {
@@ -361,14 +356,8 @@ impl Predictor {
         neighbors: &mut [u16; CHAIN_SLOTS],
     ) -> Head {
         gather_neighbors(voxels, pos, neighbors);
-        let primary_value = select_primary_value(neighbors);
+        let (primary_value, mask) = select_primary_value(neighbors);
         let primary_value32 = primary_value as u32;
-        let mut mask = 0u32;
-        for (neighbor, &value) in neighbors[..FIRST_ORDER].iter().enumerate() {
-            if value == primary_value {
-                mask |= 1 << neighbor;
-            }
-        }
         let ctx = primary_contexts(
             neighbors,
             primary_value32,
