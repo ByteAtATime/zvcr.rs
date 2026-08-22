@@ -2,7 +2,7 @@ use crate::definitions::{SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
 use crate::io::buffer::PooledBytes;
 use crate::io::serialize::experimental::models::error::ModelError;
 use crate::io::serialize::experimental::models::predictor::{
-    CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, Head, MAX_BIT_DEPTH, NONE, PRIMARY_TABLE_MASK,
+    CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, MAX_BIT_DEPTH, NONE, PRIMARY_TABLE_MASK,
     Predictor, TREE_BAND_TABLE_MASK, adapt, adapt_weights, combine, mix_logits,
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
@@ -58,17 +58,17 @@ impl Modeler {
                         z: origin_z + local_z,
                     };
                     let idx = voxel.index();
-                    let head = self.predictor.predict_head(
+                    let truth = voxels[idx];
+                    let head = self.predictor.encode_head(
+                        encoder,
                         voxels,
                         voxel,
                         pos.section_y,
                         palette_bits,
                         &mut neighbors,
+                        truth,
                     );
-                    let truth = voxels[idx];
-                    let bit = (truth == head.primary_value) as u32;
-                    encoder.encode(head.mixed, bit);
-                    self.predictor.learn_primary(&head, palette_bits, bit);
+                    let bit = head.bit;
                     let value = if bit != 0 {
                         head.primary_value
                     } else {
@@ -112,15 +112,15 @@ impl Modeler {
                         z: origin_z + local_z,
                     };
                     let idx = voxel.index();
-                    let head = self.predictor.predict_head(
+                    let head = self.predictor.decode_head(
+                        decoder,
                         voxels,
                         voxel,
                         pos.section_y,
                         palette_bits,
                         &mut neighbors,
                     );
-                    let bit = decoder.decode(head.mixed);
-                    self.predictor.learn_primary(&head, palette_bits, bit);
+                    let bit = head.bit;
                     let value = if bit != 0 {
                         head.primary_value
                     } else {
@@ -175,7 +175,7 @@ impl Modeler {
         self.encode_tree(
             encoder,
             truth,
-            ctx.head.ctx.hash,
+            ctx.head.hash,
             ctx.palette,
             ctx.palette_bits,
             ctx.section_y,
@@ -211,7 +211,7 @@ impl Modeler {
         }
         self.decode_tree(
             decoder,
-            ctx.head.ctx.hash,
+            ctx.head.hash,
             ctx.palette,
             ctx.palette_bits,
             ctx.section_y,
@@ -400,7 +400,7 @@ fn encode_grid(mut voxels: Vec<u16>, section_count: usize) -> Result<Vec<u8>, Mo
 
 struct ResidualCtx<'a> {
     neighbors: &'a [u16; CHAIN_SLOTS],
-    head: &'a Head,
+    head: &'a HeadLite,
     candidates: &'a mut [u16; CHAIN_SLOTS],
     palette: &'a [u16],
     palette_bits: usize,

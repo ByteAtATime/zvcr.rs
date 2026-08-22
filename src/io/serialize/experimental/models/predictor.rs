@@ -1,5 +1,6 @@
 use std::sync::LazyLock;
 
+use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
     SECTION_SIDE, SIDE, VoxelPos, Y_STRIDE, Z_STRIDE,
 };
@@ -131,16 +132,16 @@ fn primary_contexts(
     let value_scaled_hash = combine(neighborhood, primary_value.wrapping_mul(3));
     PrimaryCtx {
         idx: [
-            (neighborhood & PRIMARY_TABLE_MASK) as usize,
-            (rotated_neighborhood & PRIMARY_TABLE_MASK) as usize,
-            (distance_two & PRIMARY_TABLE_MASK) as usize,
-            ((mask as usize) << 8) | run.min(255) as usize,
-            (combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK) as usize,
-            (value_scaled_hash & PRIMARY_TABLE_MASK) as usize,
-            (section_y << 5) | palette_bits,
-            (diagonal & PRIMARY_TABLE_MASK) as usize,
-            (axial & PRIMARY_TABLE_MASK) as usize,
-            (lower_pair & PRIMARY_TABLE_MASK) as usize,
+            neighborhood & PRIMARY_TABLE_MASK,
+            rotated_neighborhood & PRIMARY_TABLE_MASK,
+            distance_two & PRIMARY_TABLE_MASK,
+            (mask << 8) | run.min(255),
+            combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK,
+            value_scaled_hash & PRIMARY_TABLE_MASK,
+            ((section_y as u32) << 5) | palette_bits as u32,
+            diagonal & PRIMARY_TABLE_MASK,
+            axial & PRIMARY_TABLE_MASK,
+            lower_pair & PRIMARY_TABLE_MASK,
         ],
         hash: neighborhood,
     }
@@ -302,7 +303,7 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
 }
 
 pub(super) struct PrimaryCtx {
-    pub(super) idx: [usize; MIX_INPUTS],
+    pub(super) idx: [u32; MIX_INPUTS],
     pub(super) hash: u32,
 }
 
@@ -355,59 +356,81 @@ impl Predictor {
     }
 }
 
-pub(super) struct Head {
+pub(super) struct HeadLite {
     pub(super) primary_value: u16,
     pub(super) mask: u32,
-    pub(super) ctx: PrimaryCtx,
-    pub(super) probs: [u32; MIX_INPUTS],
-    pub(super) mixed: u32,
+    pub(super) hash: u32,
+    pub(super) bit: u32,
 }
 
 impl Predictor {
-    pub(super) fn predict_head(
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn encode_head(
         &mut self,
+        encoder: &mut Encoder,
         voxels: &[u16],
         pos: VoxelPos,
         section_y: usize,
         palette_bits: usize,
         neighbors: &mut [u16; CHAIN_SLOTS],
-    ) -> Head {
+        truth: u16,
+    ) -> HeadLite {
         gather_neighbors(voxels, pos, neighbors);
         let (primary_value, mask) = select_primary_value(neighbors);
-        let primary_value32 = primary_value as u32;
-        let ctx = primary_contexts(
-            neighbors,
-            primary_value32,
-            mask,
-            self.run,
-            section_y,
-            palette_bits,
-        );
+        let ctx =
+            primary_contexts(neighbors, primary_value as u32, mask, self.run, section_y, palette_bits);
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
-            probs[k] = self.primary[k][ctx.idx[k]] as u32;
+            probs[k] = self.primary[k][ctx.idx[k] as usize] as u32;
         }
         let mixed = mix_logits(&self.weights[palette_bits], &probs);
-        Head {
+        let bit = (truth == primary_value) as u32;
+        encoder.encode(mixed, bit);
+        for k in 0..MIX_INPUTS {
+            adapt(&mut self.primary[k][ctx.idx[k] as usize], bit);
+        }
+        adapt_weights(&mut self.weights[palette_bits], &probs, bit, mixed);
+        self.run = if bit != 0 { (self.run + 1).min(255) } else { 0 };
+        HeadLite {
             primary_value,
             mask,
-            ctx,
-            probs,
-            mixed,
+            hash: ctx.hash,
+            bit,
         }
     }
 
-    pub(super) fn learn_primary(&mut self, head: &Head, palette_bits: usize, bit: u32) {
-        for (k, &index) in head.ctx.idx.iter().enumerate() {
-            adapt(&mut self.primary[k][index], bit);
+    #[inline]
+    pub(super) fn decode_head(
+        &mut self,
+        decoder: &mut Decoder,
+        voxels: &[u16],
+        pos: VoxelPos,
+        section_y: usize,
+        palette_bits: usize,
+        neighbors: &mut [u16; CHAIN_SLOTS],
+    ) -> HeadLite {
+        gather_neighbors(voxels, pos, neighbors);
+        let (primary_value, mask) = select_primary_value(neighbors);
+        let ctx =
+            primary_contexts(neighbors, primary_value as u32, mask, self.run, section_y, palette_bits);
+        let mut probs = [0u32; MIX_INPUTS];
+        for k in 0..MIX_INPUTS {
+            probs[k] = self.primary[k][ctx.idx[k] as usize] as u32;
         }
-        adapt_weights(
-            &mut self.weights[palette_bits],
-            &head.probs,
-            bit,
-            head.mixed,
-        );
+        let mixed = mix_logits(&self.weights[palette_bits], &probs);
+        let bit = decoder.decode(mixed);
+        for k in 0..MIX_INPUTS {
+            adapt(&mut self.primary[k][ctx.idx[k] as usize], bit);
+        }
+        adapt_weights(&mut self.weights[palette_bits], &probs, bit, mixed);
         self.run = if bit != 0 { (self.run + 1).min(255) } else { 0 };
+        HeadLite {
+            primary_value,
+            mask,
+            hash: ctx.hash,
+            bit,
+        }
     }
 }
 
@@ -466,16 +489,16 @@ mod tests {
         let value_scaled_hash = combine(neighborhood, primary_value.wrapping_mul(3));
         PrimaryCtx {
             idx: [
-                (neighborhood & PRIMARY_TABLE_MASK) as usize,
-                (rotated_neighborhood & PRIMARY_TABLE_MASK) as usize,
-                (distance_two & PRIMARY_TABLE_MASK) as usize,
-                ((mask as usize) << 8) | run.min(255) as usize,
-                (combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK) as usize,
-                (value_scaled_hash & PRIMARY_TABLE_MASK) as usize,
-                (section_y << 5) | palette_bits,
-                (diagonal & PRIMARY_TABLE_MASK) as usize,
-                (axial & PRIMARY_TABLE_MASK) as usize,
-                (lower_pair & PRIMARY_TABLE_MASK) as usize,
+                (neighborhood & PRIMARY_TABLE_MASK) as u32,
+                (rotated_neighborhood & PRIMARY_TABLE_MASK) as u32,
+                (distance_two & PRIMARY_TABLE_MASK) as u32,
+                (mask << 8) | run.min(255),
+                combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK,
+                value_scaled_hash & PRIMARY_TABLE_MASK,
+                ((section_y as u32) << 5) | palette_bits as u32,
+                (diagonal & PRIMARY_TABLE_MASK) as u32,
+                (axial & PRIMARY_TABLE_MASK) as u32,
+                (lower_pair & PRIMARY_TABLE_MASK) as u32,
             ],
             hash: neighborhood,
         }
