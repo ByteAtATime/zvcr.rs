@@ -197,26 +197,60 @@ pub(super) fn gather_neighbors(voxels: &[u16], pos: VoxelPos, neighbors: &mut [u
     };
 }
 
-fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> u16 {
-    let mut best = NONE;
+const fn build_weight_lut() -> [u32; 512] {
+    let mut lut = [0u32; 512];
+    let mut mask = 0usize;
+    while mask < 512 {
+        let mut total = 0u32;
+        let mut bit = 0usize;
+        while bit < FIRST_ORDER {
+            if mask & (1 << bit) != 0 {
+                total += PRIMARY_VALUE_WEIGHTS[bit];
+            }
+            bit += 1;
+        }
+        lut[mask] = total;
+        mask += 1;
+    }
+    lut
+}
+
+static WEIGHT_LUT: [u32; 512] = build_weight_lut();
+
+fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
+    let slice = &neighbors[..FIRST_ORDER];
+    let mut seen = 0u32;
+    let mut best_val = NONE;
     let mut best_score = 0u32;
-    for slot in 0..FIRST_ORDER {
-        let value = neighbors[slot];
-        if value == NONE {
+    let mut best_last_slot = usize::MAX;
+
+    for i in 0..FIRST_ORDER {
+        if (seen & (1 << i)) != 0 || slice[i] == NONE {
             continue;
         }
-        let mut score = PRIMARY_VALUE_WEIGHTS[slot];
-        for prior in 0..slot {
-            if neighbors[prior] == value {
-                score += PRIMARY_VALUE_WEIGHTS[prior];
+
+        let val = slice[i];
+        let mut mask = 1 << i;
+        let mut last_slot = i;
+
+        for j in (i + 1)..FIRST_ORDER {
+            if slice[j] == val {
+                mask |= 1 << j;
+                last_slot = j;
             }
         }
-        if score > best_score {
+
+        seen |= mask;
+        let score = WEIGHT_LUT[mask as usize];
+
+        if score > best_score || (score == best_score && last_slot < best_last_slot) {
             best_score = score;
-            best = value;
+            best_val = val;
+            best_last_slot = last_slot;
         }
     }
-    best
+
+    best_val
 }
 
 pub(super) struct PrimaryCtx {
