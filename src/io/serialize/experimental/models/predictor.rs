@@ -19,6 +19,7 @@ const PRIMARY_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / MIX_INPUTS as i32;
 const TREE_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / TREE_INPUTS as i32;
 const WEIGHT_LIMIT: i32 = 1 << 20;
 const ADAPT_RATE_SHIFT: i32 = 5;
+const HEAD_ADAPT_SHIFT: i32 = 4;
 
 const PRIMARY_TABLE_SIZE: usize = 1 << 18;
 pub(super) const PRIMARY_TABLE_MASK: u32 = PRIMARY_TABLE_SIZE as u32 - 1;
@@ -563,7 +564,7 @@ impl Predictor {
                     .primary
                     .get_unchecked_mut(k)
                     .get_unchecked_mut(ctx[k] as usize) =
-                    (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
+                    (current + ((target - current) >> HEAD_ADAPT_SHIFT)) as u16;
             }
         }
         let mixed = mix_stretched(
@@ -638,7 +639,7 @@ impl Predictor {
                     .primary
                     .get_unchecked_mut(k)
                     .get_unchecked_mut(ctx[k] as usize) =
-                    (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
+                    (current + ((target - current) >> HEAD_ADAPT_SHIFT)) as u16;
             }
         }
         adapt_weights_stretched(
