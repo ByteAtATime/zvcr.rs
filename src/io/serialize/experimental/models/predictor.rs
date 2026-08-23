@@ -19,8 +19,13 @@ const MIXER_UNIT: i32 = 1 << 16;
 const PRIMARY_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / MIX_INPUTS as i32;
 const TREE_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / TREE_INPUTS as i32;
 const WEIGHT_LIMIT: i32 = 1 << 20;
-const ADAPT_RATE_SHIFT: i32 = 5;
+pub(super) const ADAPT_RATE_SHIFT: i32 = 5;
 const HEAD_ADAPT_SHIFT: i32 = 4;
+const COUNT_LIMIT: u8 = 29;
+
+const COUNT_RATE_SHIFTS: [i32; COUNT_LIMIT as usize + 1] = [
+    2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+];
 
 const PRIMARY_TABLE_SIZE: usize = 1 << 18;
 pub(super) const PRIMARY_TABLE_MASK: u32 = PRIMARY_TABLE_SIZE as u32 - 1;
@@ -209,10 +214,12 @@ const fn build_stretch() -> [i32; 4096] {
 static STRETCH: [i32; 4096] = build_stretch();
 
 #[inline]
-pub(super) fn adapt(counter: &mut u16, bit: u32) {
+pub(super) fn adapt(counter: &mut u16, count: &mut u8, bit: u32, cap: i32) {
     let current = *counter as i32;
     let target = if bit != 0 { PROB_MAX } else { 0 };
-    *counter = (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
+    let shift = COUNT_RATE_SHIFTS[(*count).min(COUNT_LIMIT) as usize].min(cap);
+    *counter = (current + ((target - current) >> shift)) as u16;
+    *count = (*count + 1).min(COUNT_LIMIT);
 }
 
 #[inline(always)]
@@ -458,27 +465,33 @@ pub(super) fn adapt_weights_stretched(
 pub(super) struct Predictor {
     pub(super) primary: Box<[[u16; PRIMARY_TABLE_SIZE]; MIX_INPUTS]>,
     pub(super) chain: Box<[[u16; CHAIN_TABLE_SIZE]; CHAIN_SLOTS]>,
+    pub(super) chain_counts: Box<[[u8; CHAIN_TABLE_SIZE]; CHAIN_SLOTS]>,
     pub(super) tree: Box<[[u16; PRIMARY_TABLE_SIZE]; 2]>,
+    pub(super) tree_counts: Box<[[u8; PRIMARY_TABLE_SIZE]; 2]>,
     pub(super) tree_band: Box<[u16]>,
+    pub(super) tree_band_counts: Box<[u8]>,
     pub(super) weights: Box<[[i32; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8]>,
     pub(super) tree_weights: Box<[[i32; TREE_INPUTS]; MAX_BIT_DEPTH + 1]>,
     pub(super) run: u32,
 }
 
-fn filled_tables<const N: usize, const M: usize>(value: u16) -> Box<[[u16; N]; M]> {
+fn filled_tables<T: Copy, const N: usize, const M: usize>(value: T) -> Box<[[T; N]; M]> {
     let mut flat = vec![value; N * M];
     let ptr = flat.as_mut_ptr();
     std::mem::forget(flat);
-    unsafe { Box::from_raw(ptr.cast::<[[u16; N]; M]>()) }
+    unsafe { Box::from_raw(ptr.cast::<[[T; N]; M]>()) }
 }
 
 impl Predictor {
     pub(super) fn new() -> Self {
         Self {
-            primary: filled_tables::<PRIMARY_TABLE_SIZE, MIX_INPUTS>(PROB_HALF),
-            chain: filled_tables::<CHAIN_TABLE_SIZE, CHAIN_SLOTS>(PROB_HALF),
-            tree: filled_tables::<PRIMARY_TABLE_SIZE, 2>(PROB_HALF),
+            primary: filled_tables::<u16, PRIMARY_TABLE_SIZE, MIX_INPUTS>(PROB_HALF),
+            chain: filled_tables::<u16, CHAIN_TABLE_SIZE, CHAIN_SLOTS>(PROB_HALF),
+            chain_counts: filled_tables::<u8, CHAIN_TABLE_SIZE, CHAIN_SLOTS>(0u8),
+            tree: filled_tables::<u16, PRIMARY_TABLE_SIZE, 2>(PROB_HALF),
+            tree_counts: filled_tables::<u8, PRIMARY_TABLE_SIZE, 2>(0u8),
             tree_band: Box::new([PROB_HALF; TREE_BAND_TABLE_SIZE]),
+            tree_band_counts: Box::new([0u8; TREE_BAND_TABLE_SIZE]),
             weights: Box::new([[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS];
                 (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8]),
             tree_weights: Box::new([[TREE_MIXER_SEED_WEIGHT; TREE_INPUTS]; MAX_BIT_DEPTH + 1]),

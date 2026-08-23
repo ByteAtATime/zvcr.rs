@@ -3,8 +3,8 @@ use crate::io::buffer::PooledBytes;
 use crate::io::serialize::experimental::models::error::ModelError;
 use crate::io::serialize::experimental::models::predictor::{
     CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, HeadState, MAX_BIT_DEPTH, NONE,
-    PRIMARY_TABLE_MASK, Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, adapt, adapt_weights,
-    combine, gather_neighbors, gather_neighbors_fast, mix_logits,
+    PRIMARY_TABLE_MASK, Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, ADAPT_RATE_SHIFT, adapt,
+    adapt_weights, combine, gather_neighbors, gather_neighbors_fast, mix_logits,
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
@@ -186,7 +186,12 @@ impl Modeler {
             let prob = self.predictor.chain[slot][chain_ctx] as u32;
             let bit = (truth == candidate) as u32;
             encoder.encode(prob, bit);
-            adapt(&mut self.predictor.chain[slot][chain_ctx], bit);
+            adapt(
+                &mut self.predictor.chain[slot][chain_ctx],
+                &mut self.predictor.chain_counts[slot][chain_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
             if bit != 0 {
                 return Ok(candidate);
             }
@@ -223,7 +228,12 @@ impl Modeler {
             ) & CHAIN_TABLE_MASK) as usize;
             let prob = self.predictor.chain[slot][chain_ctx] as u32;
             let bit = decoder.decode(prob);
-            adapt(&mut self.predictor.chain[slot][chain_ctx], bit);
+            adapt(
+                &mut self.predictor.chain[slot][chain_ctx],
+                &mut self.predictor.chain_counts[slot][chain_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
             if bit != 0 {
                 return Ok(candidate);
             }
@@ -263,9 +273,24 @@ impl Modeler {
             let mixed = mix_logits(&self.predictor.tree_weights[palette_bits], &probs);
             let bit = ((truth_index >> bit_pos) & 1) as u32;
             encoder.encode(mixed, bit);
-            adapt(&mut self.predictor.tree[0][spatial_tree_ctx], bit);
-            adapt(&mut self.predictor.tree[1][bitpos_tree_ctx], bit);
-            adapt(&mut self.predictor.tree_band[height_tree_ctx], bit);
+            adapt(
+                &mut self.predictor.tree[0][spatial_tree_ctx],
+                &mut self.predictor.tree_counts[0][spatial_tree_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
+            adapt(
+                &mut self.predictor.tree[1][bitpos_tree_ctx],
+                &mut self.predictor.tree_counts[1][bitpos_tree_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
+            adapt(
+                &mut self.predictor.tree_band[height_tree_ctx],
+                &mut self.predictor.tree_band_counts[height_tree_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
             adapt_weights(
                 &mut self.predictor.tree_weights[palette_bits],
                 &probs,
@@ -305,9 +330,24 @@ impl Modeler {
             ];
             let mixed = mix_logits(&self.predictor.tree_weights[palette_bits], &probs);
             let bit = decoder.decode(mixed);
-            adapt(&mut self.predictor.tree[0][spatial_tree_ctx], bit);
-            adapt(&mut self.predictor.tree[1][bitpos_tree_ctx], bit);
-            adapt(&mut self.predictor.tree_band[height_tree_ctx], bit);
+            adapt(
+                &mut self.predictor.tree[0][spatial_tree_ctx],
+                &mut self.predictor.tree_counts[0][spatial_tree_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
+            adapt(
+                &mut self.predictor.tree[1][bitpos_tree_ctx],
+                &mut self.predictor.tree_counts[1][bitpos_tree_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
+            adapt(
+                &mut self.predictor.tree_band[height_tree_ctx],
+                &mut self.predictor.tree_band_counts[height_tree_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
             adapt_weights(
                 &mut self.predictor.tree_weights[palette_bits],
                 &probs,
