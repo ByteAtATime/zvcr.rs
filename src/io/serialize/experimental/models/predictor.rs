@@ -1,9 +1,9 @@
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{SECTION_SIDE, SIDE, Y_STRIDE, Z_STRIDE};
 
-pub(super) const NONE: u16 = u16::MAX;
+pub const NONE: u16 = u16::MAX;
 const FIRST_ORDER: usize = 9;
-pub(super) const CHAIN_SLOTS: usize = 12;
+pub const CHAIN_SLOTS: usize = 12;
 pub(super) const CHAIN_ORDER: [usize; CHAIN_SLOTS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const PRIMARY_VALUE_WEIGHTS: [u32; FIRST_ORDER] = [3, 3, 3, 2, 2, 2, 2, 1, 1];
 
@@ -344,49 +344,45 @@ const fn build_key_lut() -> [u32; 512] {
 
 static KEY_LUT: [u32; 512] = build_key_lut();
 
-const fn build_equality_gather_multiplier() -> u64 {
-    let mut multiplier = 0u64;
-    let mut lane = 0usize;
-    while lane < 8 {
-        multiplier |= 1 << (63 - 9 * lane);
-        lane += 1;
-    }
-    multiplier
-}
-
-const EQUALITY_GATHER_MULTIPLIER: u64 = build_equality_gather_multiplier();
-
 #[inline(always)]
 fn equality_mask(slice: &[u16; FIRST_ORDER], val: u16) -> u32 {
-    let mut bytes = [0u8; 8];
-    for (byte, &v) in bytes.iter_mut().zip(slice.iter()) {
-        *byte = (v == val) as u8;
+    let mut mask = 0u32;
+    for i in 0..8 {
+        mask |= ((slice[i] == val) as u32) << i;
     }
-    let folded = (u64::from_le_bytes(bytes).wrapping_mul(EQUALITY_GATHER_MULTIPLIER) >> 56) as u32;
-    let mut mask = folded.reverse_bits() >> 24;
     mask |= ((slice[8] == val) as u32) << 8;
     mask
 }
 
+const SUFFIX_WEIGHTS: [u32; FIRST_ORDER + 1] = {
+    let mut s = [0u32; FIRST_ORDER + 1];
+    let mut i = FIRST_ORDER;
+    while i > 0 {
+        s[i - 1] = s[i] + PRIMARY_VALUE_WEIGHTS[i - 1];
+        i -= 1;
+    }
+    s
+};
+
 #[inline(always)]
 fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
-    let slice = &neighbors[..FIRST_ORDER];
-    let mut seen = 0u32;
+    let slice: &[u16; FIRST_ORDER] = neighbors[..FIRST_ORDER].try_into().unwrap();
     let mut best_val = NONE;
     let mut best_key = 0u32;
     let mut best_mask = 0x1FF;
 
     for i in 0..FIRST_ORDER {
-        if (seen & (1 << i)) != 0 || slice[i] == NONE {
+        if (best_key >> 5) > SUFFIX_WEIGHTS[i] {
+            break;
+        }
+        let val = slice[i];
+        if val == NONE {
             continue;
         }
 
         let val = slice[i];
-        let mask = equality_mask(slice.try_into().unwrap(), val);
-
-        seen |= mask;
+        let mask = equality_mask(slice, val);
         let key = KEY_LUT[mask as usize];
-
         if key > best_key {
             best_key = key;
             best_val = val;
@@ -458,7 +454,9 @@ pub(super) fn adapt_weights_stretched(
         updates[k] = (error * stretched[k]) >> 13;
     }
     for k in 0..MIX_INPUTS {
-        weights[k] = (weights[k] + updates[k]).max(-WEIGHT_LIMIT).min(WEIGHT_LIMIT);
+        weights[k] = (weights[k] + updates[k])
+            .max(-WEIGHT_LIMIT)
+            .min(WEIGHT_LIMIT);
     }
 }
 
@@ -492,8 +490,9 @@ impl Predictor {
             tree_counts: filled_tables::<u8, PRIMARY_TABLE_SIZE, 2>(0u8),
             tree_band: Box::new([PROB_HALF; TREE_BAND_TABLE_SIZE]),
             tree_band_counts: Box::new([0u8; TREE_BAND_TABLE_SIZE]),
-            weights: Box::new([[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS];
-                (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8]),
+            weights: Box::new(
+                [[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8],
+            ),
             tree_weights: Box::new([[TREE_MIXER_SEED_WEIGHT; TREE_INPUTS]; MAX_BIT_DEPTH + 1]),
             run: 0,
         }
@@ -573,7 +572,14 @@ impl Predictor {
             idx_ctx[3] = (mask << 8) | self.run.min(255);
         } else {
             let (pv, m) = select_primary_value(&state.neighbors);
-            let ctx = primary_contexts(&state.neighbors, pv as u32, m, self.run, section_y, palette_bits);
+            let ctx = primary_contexts(
+                &state.neighbors,
+                pv as u32,
+                m,
+                self.run,
+                section_y,
+                palette_bits,
+            );
             primary_value = pv;
             mask = m;
             hash = ctx.hash;
@@ -605,8 +611,7 @@ impl Predictor {
             }
         }
         let cluster = cluster_of(&state.neighbors, miss, idx);
-        let conf =
-            (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
+        let conf = (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
         let weight_row = palette_bits * CONF_BUCKETS * 8 + conf * 8 + cluster as usize;
         let mixed = mix_stretched(
             unsafe { self.weights.get_unchecked(weight_row) },
@@ -651,7 +656,14 @@ impl Predictor {
             idx_ctx[3] = (mask << 8) | self.run.min(255);
         } else {
             let (pv, m) = select_primary_value(&state.neighbors);
-            let ctx = primary_contexts(&state.neighbors, pv as u32, m, self.run, section_y, palette_bits);
+            let ctx = primary_contexts(
+                &state.neighbors,
+                pv as u32,
+                m,
+                self.run,
+                section_y,
+                palette_bits,
+            );
             primary_value = pv;
             mask = m;
             hash = ctx.hash;
@@ -671,8 +683,7 @@ impl Predictor {
         }
         let stretched = stretch_probs(&probs);
         let cluster = cluster_of(&state.neighbors, miss, idx);
-        let conf =
-            (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
+        let conf = (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
         let weight_row = palette_bits * CONF_BUCKETS * 8 + conf * 8 + cluster as usize;
         let mixed = mix_stretched(
             unsafe { self.weights.get_unchecked(weight_row) },
