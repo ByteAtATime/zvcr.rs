@@ -5,6 +5,9 @@ mod pack;
 pub(crate) mod reader;
 pub(crate) mod writer;
 
+#[doc(hidden)]
+pub use models::mixer;
+
 use crate::io::serialize::types::{Reader, Writer};
 use crate::raw::RegionData;
 

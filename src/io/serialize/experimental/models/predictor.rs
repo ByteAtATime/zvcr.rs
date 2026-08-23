@@ -7,20 +7,20 @@ pub const CHAIN_SLOTS: usize = 12;
 pub(super) const CHAIN_ORDER: [usize; CHAIN_SLOTS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const PRIMARY_VALUE_WEIGHTS: [u32; FIRST_ORDER] = [3, 3, 3, 2, 2, 2, 2, 1, 1];
 
-const PROB_MAX: i32 = 4095;
-const PROB_HALF: u16 = 2048;
+pub const PROB_MAX: i32 = 4095;
+pub const PROB_HALF: u16 = 2048;
 
-pub(super) const MIX_INPUTS: usize = 10;
-const CONF_BUCKETS: usize = 8;
-pub(super) const TREE_INPUTS: usize = 3;
-pub(super) const MAX_BIT_DEPTH: usize = 16;
+pub const MIX_INPUTS: usize = 10;
+pub const CONF_BUCKETS: usize = 8;
+pub const TREE_INPUTS: usize = 3;
+pub const MAX_BIT_DEPTH: usize = 16;
 
 const MIXER_UNIT: i32 = 1 << 16;
-const PRIMARY_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / MIX_INPUTS as i32;
-const TREE_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / TREE_INPUTS as i32;
+pub const PRIMARY_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / MIX_INPUTS as i32;
+pub const TREE_MIXER_SEED_WEIGHT: i32 = MIXER_UNIT / TREE_INPUTS as i32;
 const WEIGHT_LIMIT: i32 = 1 << 20;
-pub(super) const ADAPT_RATE_SHIFT: i32 = 5;
-const HEAD_ADAPT_SHIFT: i32 = 4;
+pub const ADAPT_RATE_SHIFT: i32 = 5;
+pub const HEAD_ADAPT_SHIFT: i32 = 4;
 const COUNT_LIMIT: u8 = 29;
 
 const COUNT_RATE_SHIFTS: [i32; COUNT_LIMIT as usize + 1] = [
@@ -402,7 +402,7 @@ pub(super) struct PrimaryCtx {
 }
 
 #[inline]
-pub(super) fn mix_logits(weights: &[i32], probs: &[u32]) -> u32 {
+pub fn mix_logits(weights: &[i32], probs: &[u32]) -> u32 {
     let mut dot = 0i64;
     for (weight, &prob) in weights.iter().zip(probs) {
         dot += *weight as i64 * STRETCH[prob as usize] as i64;
@@ -411,7 +411,7 @@ pub(super) fn mix_logits(weights: &[i32], probs: &[u32]) -> u32 {
 }
 
 #[inline]
-pub(super) fn adapt_weights(weights: &mut [i32], probs: &[u32], bit: u32, mixed: u32) {
+pub fn adapt_weights(weights: &mut [i32], probs: &[u32], bit: u32, mixed: u32) {
     let error = bit as i32 * 4096 - mixed as i32;
     for (weight, &prob) in weights.iter_mut().zip(probs) {
         *weight =
@@ -420,7 +420,7 @@ pub(super) fn adapt_weights(weights: &mut [i32], probs: &[u32], bit: u32, mixed:
 }
 
 #[inline]
-pub(super) fn stretch_probs(probs: &[u32; MIX_INPUTS]) -> [i32; MIX_INPUTS] {
+pub fn stretch_probs(probs: &[u32; MIX_INPUTS]) -> [i32; MIX_INPUTS] {
     let mut stretched = [0i32; MIX_INPUTS];
     for (stretched, &prob) in stretched.iter_mut().zip(probs) {
         *stretched = unsafe { *STRETCH.get_unchecked(prob as usize) };
@@ -429,7 +429,7 @@ pub(super) fn stretch_probs(probs: &[u32; MIX_INPUTS]) -> [i32; MIX_INPUTS] {
 }
 
 #[inline]
-pub(super) fn mix_stretched(weights: &[i32; MIX_INPUTS], stretched: &[i32; MIX_INPUTS]) -> u32 {
+pub fn mix_stretched(weights: &[i32; MIX_INPUTS], stretched: &[i32; MIX_INPUTS]) -> u32 {
     let mut products = [0i32; MIX_INPUTS];
     for k in 0..MIX_INPUTS {
         products[k] = weights[k] * stretched[k];
@@ -442,7 +442,7 @@ pub(super) fn mix_stretched(weights: &[i32; MIX_INPUTS], stretched: &[i32; MIX_I
 }
 
 #[inline]
-pub(super) fn adapt_weights_stretched(
+pub fn adapt_weights_stretched(
     weights: &mut [i32; MIX_INPUTS],
     stretched: &[i32; MIX_INPUTS],
     bit: u32,

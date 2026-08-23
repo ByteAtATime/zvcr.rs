@@ -17,3 +17,7 @@ criterion = "0.5"
 [[bench]]
 name = "rans"
 harness = false
+
+[[bench]]
+name = "mixer"
+harness = false
