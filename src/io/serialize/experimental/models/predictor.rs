@@ -254,6 +254,35 @@ pub(super) fn gather_neighbors(
     };
 }
 
+#[inline(always)]
+pub(super) fn gather_neighbors_fast(
+    voxels: &[u16],
+    idx: usize,
+    east_causal: bool,
+    neighbors: &mut [u16; CHAIN_SLOTS],
+) {
+    neighbors[0] = voxels[idx - 1];
+    neighbors[1] = voxels[idx - Y_STRIDE];
+    neighbors[2] = voxels[idx - Z_STRIDE];
+    neighbors[3] = voxels[idx - 1 - Z_STRIDE];
+    neighbors[4] = voxels[idx - 1 - Y_STRIDE];
+    neighbors[5] = voxels[idx - Y_STRIDE - Z_STRIDE];
+    neighbors[6] = voxels[idx - 1 - Y_STRIDE - Z_STRIDE];
+    neighbors[7] = if east_causal {
+        voxels[idx + 1 - Y_STRIDE]
+    } else {
+        NONE
+    };
+    neighbors[8] = if east_causal {
+        voxels[idx + 1 - Y_STRIDE - Z_STRIDE]
+    } else {
+        NONE
+    };
+    neighbors[9] = voxels[idx - 2];
+    neighbors[10] = voxels[idx - 2 * Z_STRIDE];
+    neighbors[11] = voxels[idx - 2 * Y_STRIDE];
+}
+
 const fn build_weight_lut() -> [u32; 512] {
     let mut lut = [0u32; 512];
     let mut mask = 0usize;
@@ -479,14 +508,6 @@ impl HeadState {
 }
 
 #[derive(Copy, Clone)]
-pub(super) struct VoxelPos {
-    pub(super) idx: usize,
-    pub(super) x: usize,
-    pub(super) y: usize,
-    pub(super) z: usize,
-}
-
-#[derive(Copy, Clone)]
 pub(super) struct SectionMetadata {
     pub(super) section_y: usize,
     pub(super) palette_bits: usize,
@@ -497,33 +518,29 @@ impl Predictor {
     pub(super) fn encode_head(
         &mut self,
         encoder: &mut Encoder,
-        voxels: &[u16],
-        site: VoxelPos,
         section: SectionMetadata,
         state: &mut HeadState,
         truth: u16,
     ) -> HeadLite {
         let palette_bits = section.palette_bits;
         let section_y = section.section_y;
-        let neighbors = &mut state.neighbors;
         let memo = &mut state.memo;
-        gather_neighbors(voxels, site.idx, site.x, site.y, site.z, neighbors);
         let (primary_value, mask, hash);
         let mut idx_ctx;
-        if memo.valid && memo.key == *neighbors {
+        if memo.valid && memo.key == state.neighbors {
             primary_value = memo.primary_value;
             mask = memo.mask;
             hash = memo.hash;
             idx_ctx = memo.idx;
             idx_ctx[3] = (mask << 8) | self.run.min(255);
         } else {
-            let (pv, m) = select_primary_value(neighbors);
-            let ctx = primary_contexts(neighbors, pv as u32, m, self.run, section_y, palette_bits);
+            let (pv, m) = select_primary_value(&state.neighbors);
+            let ctx = primary_contexts(&state.neighbors, pv as u32, m, self.run, section_y, palette_bits);
             primary_value = pv;
             mask = m;
             hash = ctx.hash;
             idx_ctx = ctx.idx;
-            memo.key = *neighbors;
+            memo.key = state.neighbors;
             memo.valid = true;
             memo.primary_value = pv;
             memo.mask = m;
@@ -573,32 +590,28 @@ impl Predictor {
     pub(super) fn decode_head(
         &mut self,
         decoder: &mut Decoder,
-        voxels: &[u16],
-        site: VoxelPos,
         section: SectionMetadata,
         state: &mut HeadState,
     ) -> HeadLite {
         let palette_bits = section.palette_bits;
         let section_y = section.section_y;
-        let neighbors = &mut state.neighbors;
         let memo = &mut state.memo;
-        gather_neighbors(voxels, site.idx, site.x, site.y, site.z, neighbors);
         let (primary_value, mask, hash);
         let mut idx_ctx;
-        if memo.valid && memo.key == *neighbors {
+        if memo.valid && memo.key == state.neighbors {
             primary_value = memo.primary_value;
             mask = memo.mask;
             hash = memo.hash;
             idx_ctx = memo.idx;
             idx_ctx[3] = (mask << 8) | self.run.min(255);
         } else {
-            let (pv, m) = select_primary_value(neighbors);
-            let ctx = primary_contexts(neighbors, pv as u32, m, self.run, section_y, palette_bits);
+            let (pv, m) = select_primary_value(&state.neighbors);
+            let ctx = primary_contexts(&state.neighbors, pv as u32, m, self.run, section_y, palette_bits);
             primary_value = pv;
             mask = m;
             hash = ctx.hash;
             idx_ctx = ctx.idx;
-            memo.key = *neighbors;
+            memo.key = state.neighbors;
             memo.valid = true;
             memo.primary_value = pv;
             memo.mask = m;

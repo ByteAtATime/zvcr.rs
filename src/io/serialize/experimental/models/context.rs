@@ -3,8 +3,8 @@ use crate::io::buffer::PooledBytes;
 use crate::io::serialize::experimental::models::error::ModelError;
 use crate::io::serialize::experimental::models::predictor::{
     CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, HeadState, MAX_BIT_DEPTH, NONE, PRIMARY_TABLE_MASK,
-    Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, VoxelPos, adapt, adapt_weights, combine,
-    mix_logits,
+    Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, adapt, adapt_weights, combine,
+    gather_neighbors, gather_neighbors_fast, mix_logits,
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
@@ -59,18 +59,19 @@ impl Modeler {
             for local_z in 0..SECTION_SIDE {
                 let z = origin_z + local_z;
                 let row = y * Y_STRIDE + z * Z_STRIDE + origin_x;
+                let fast_row = (pos.section_y > 0 || local_y >= 2) && (origin_z > 0 || local_z >= 2);
                 for local_x in 0..SECTION_SIDE {
                     let x = origin_x + local_x;
                     let idx = row + local_x;
+                    if fast_row && local_x >= 2 {
+                        let east_causal =
+                            x + 1 < SIDE && (local_x + 1 < SECTION_SIDE || local_y == 0);
+                        gather_neighbors_fast(voxels, idx, east_causal, &mut state.neighbors);
+                    } else {
+                        gather_neighbors(voxels, idx, x, y, z, &mut state.neighbors);
+                    }
                     let truth = voxels[idx];
-                    let head = self.predictor.encode_head(
-                        encoder,
-                        voxels,
-                        VoxelPos { idx, x, y, z },
-                        section,
-                        &mut state,
-                        truth,
-                    );
+                    let head = self.predictor.encode_head(encoder, section, &mut state, truth);
                     if head.bit == 0 {
                         self.encode_residual(
                             encoder,
@@ -111,16 +112,18 @@ impl Modeler {
             for local_z in 0..SECTION_SIDE {
                 let z = origin_z + local_z;
                 let row = y * Y_STRIDE + z * Z_STRIDE + origin_x;
+                let fast_row = (pos.section_y > 0 || local_y >= 2) && (origin_z > 0 || local_z >= 2);
                 for local_x in 0..SECTION_SIDE {
                     let x = origin_x + local_x;
                     let idx = row + local_x;
-                    let head = self.predictor.decode_head(
-                        decoder,
-                        voxels,
-                        VoxelPos { idx, x, y, z },
-                        section,
-                        &mut state,
-                    );
+                    if fast_row && local_x >= 2 {
+                        let east_causal =
+                            x + 1 < SIDE && (local_x + 1 < SECTION_SIDE || local_y == 0);
+                        gather_neighbors_fast(voxels, idx, east_causal, &mut state.neighbors);
+                    } else {
+                        gather_neighbors(voxels, idx, x, y, z, &mut state.neighbors);
+                    }
+                    let head = self.predictor.decode_head(decoder, section, &mut state);
                     let value = if head.bit != 0 {
                         head.primary_value
                     } else {
