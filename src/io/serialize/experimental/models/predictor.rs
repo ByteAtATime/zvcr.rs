@@ -11,6 +11,7 @@ const PROB_MAX: i32 = 4095;
 const PROB_HALF: u16 = 2048;
 
 pub(super) const MIX_INPUTS: usize = 10;
+const CONF_BUCKETS: usize = 8;
 pub(super) const TREE_INPUTS: usize = 3;
 pub(super) const MAX_BIT_DEPTH: usize = 16;
 
@@ -439,7 +440,7 @@ pub(super) struct Predictor {
     pub(super) chain: Box<[[u16; CHAIN_TABLE_SIZE]; CHAIN_SLOTS]>,
     pub(super) tree: Box<[[u16; PRIMARY_TABLE_SIZE]; 2]>,
     pub(super) tree_band: Box<[u16]>,
-    pub(super) weights: Box<[[i32; MIX_INPUTS]; MAX_BIT_DEPTH + 1]>,
+    pub(super) weights: Box<[[i32; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * CONF_BUCKETS]>,
     pub(super) tree_weights: Box<[[i32; TREE_INPUTS]; MAX_BIT_DEPTH + 1]>,
     pub(super) run: u32,
 }
@@ -458,7 +459,8 @@ impl Predictor {
             chain: filled_tables::<CHAIN_TABLE_SIZE, CHAIN_SLOTS>(PROB_HALF),
             tree: filled_tables::<PRIMARY_TABLE_SIZE, 2>(PROB_HALF),
             tree_band: Box::new([PROB_HALF; TREE_BAND_TABLE_SIZE]),
-            weights: Box::new([[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS]; MAX_BIT_DEPTH + 1]),
+            weights: Box::new([[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS];
+                (MAX_BIT_DEPTH + 1) * CONF_BUCKETS]),
             tree_weights: Box::new([[TREE_MIXER_SEED_WEIGHT; TREE_INPUTS]; MAX_BIT_DEPTH + 1]),
             run: 0,
         }
@@ -567,13 +569,16 @@ impl Predictor {
                     (current + ((target - current) >> HEAD_ADAPT_SHIFT)) as u16;
             }
         }
+        let conf =
+            (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
+        let weight_row = palette_bits * CONF_BUCKETS + conf;
         let mixed = mix_stretched(
-            unsafe { self.weights.get_unchecked(palette_bits) },
+            unsafe { self.weights.get_unchecked(weight_row) },
             &stretched,
         );
         encoder.encode(mixed, bit);
         adapt_weights_stretched(
-            unsafe { self.weights.get_unchecked_mut(palette_bits) },
+            unsafe { self.weights.get_unchecked_mut(weight_row) },
             &stretched,
             bit,
             mixed,
@@ -626,8 +631,11 @@ impl Predictor {
                 unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx[k] as usize) } as u32;
         }
         let stretched = stretch_probs(&probs);
+        let conf =
+            (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
+        let weight_row = palette_bits * CONF_BUCKETS + conf;
         let mixed = mix_stretched(
-            unsafe { self.weights.get_unchecked(palette_bits) },
+            unsafe { self.weights.get_unchecked(weight_row) },
             &stretched,
         );
         let bit = decoder.decode(mixed);
@@ -643,7 +651,7 @@ impl Predictor {
             }
         }
         adapt_weights_stretched(
-            unsafe { self.weights.get_unchecked_mut(palette_bits) },
+            unsafe { self.weights.get_unchecked_mut(weight_row) },
             &stretched,
             bit,
             mixed,
