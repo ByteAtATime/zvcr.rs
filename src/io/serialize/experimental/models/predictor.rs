@@ -376,19 +376,14 @@ pub(super) fn stretch_probs(probs: &[u32; MIX_INPUTS]) -> [i32; MIX_INPUTS] {
 
 #[inline]
 pub(super) fn mix_stretched(weights: &[i32; MIX_INPUTS], stretched: &[i32; MIX_INPUTS]) -> u32 {
-    let p0 = weights[0].wrapping_mul(stretched[0]);
-    let p1 = weights[1].wrapping_mul(stretched[1]);
-    let p2 = weights[2].wrapping_mul(stretched[2]);
-    let p3 = weights[3].wrapping_mul(stretched[3]);
-    let p4 = weights[4].wrapping_mul(stretched[4]);
-    let p5 = weights[5].wrapping_mul(stretched[5]);
-    let p6 = weights[6].wrapping_mul(stretched[6]);
-    let p7 = weights[7].wrapping_mul(stretched[7]);
-    let p8 = weights[8].wrapping_mul(stretched[8]);
-    let p9 = weights[9].wrapping_mul(stretched[9]);
-    let dot = ((p0 as i64 + p1 as i64) + (p2 as i64 + p3 as i64))
-        + ((p4 as i64 + p5 as i64) + (p6 as i64 + p7 as i64))
-        + (p8 as i64 + p9 as i64);
+    let mut products = [0i32; MIX_INPUTS];
+    for k in 0..MIX_INPUTS {
+        products[k] = weights[k] * stretched[k];
+    }
+    let mut dot = 0i64;
+    for &product in &products {
+        dot += product as i64;
+    }
     squash((dot >> 16) as i32) as u32
 }
 
@@ -400,8 +395,12 @@ pub(super) fn adapt_weights_stretched(
     mixed: u32,
 ) {
     let error = bit as i32 * 4096 - mixed as i32;
-    for (weight, &value) in weights.iter_mut().zip(stretched) {
-        *weight = (*weight + ((error * value) >> 13)).clamp(-WEIGHT_LIMIT, WEIGHT_LIMIT);
+    let mut updates = [0i32; MIX_INPUTS];
+    for k in 0..MIX_INPUTS {
+        updates[k] = (error * stretched[k]) >> 13;
+    }
+    for k in 0..MIX_INPUTS {
+        weights[k] = (weights[k] + updates[k]).max(-WEIGHT_LIMIT).min(WEIGHT_LIMIT);
     }
 }
 
