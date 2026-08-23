@@ -286,21 +286,32 @@ const fn build_key_lut() -> [u32; 512] {
 
 static KEY_LUT: [u32; 512] = build_key_lut();
 
+const fn build_equality_gather_multiplier() -> u64 {
+    let mut multiplier = 0u64;
+    let mut lane = 0usize;
+    while lane < 8 {
+        multiplier |= 1 << (63 - 9 * lane);
+        lane += 1;
+    }
+    multiplier
+}
+
+const EQUALITY_GATHER_MULTIPLIER: u64 = build_equality_gather_multiplier();
+
+#[inline(always)]
+fn equality_mask(slice: &[u16; FIRST_ORDER], val: u16) -> u32 {
+    let mut bytes = [0u8; 8];
+    for (byte, &v) in bytes.iter_mut().zip(slice.iter()) {
+        *byte = (v == val) as u8;
+    }
+    let folded = (u64::from_le_bytes(bytes).wrapping_mul(EQUALITY_GATHER_MULTIPLIER) >> 56) as u32;
+    let mut mask = folded.reverse_bits() >> 24;
+    mask |= ((slice[8] == val) as u32) << 8;
+    mask
+}
+
 #[inline(always)]
 fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx512f",
-        target_feature = "avx512bw"
-    ))]
-    let full = {
-        use core::arch::x86_64::{
-            _mm256_castsi128_si256, _mm256_insert_epi16, _mm_loadu_si128,
-        };
-        let low = unsafe { _mm_loadu_si128(neighbors.as_ptr().cast()) };
-        let wide = unsafe { _mm256_castsi128_si256(low) };
-        unsafe { _mm256_insert_epi16(wide, neighbors[FIRST_ORDER - 1] as i16, 8) }
-    };
     let slice = &neighbors[..FIRST_ORDER];
     let mut seen = 0u32;
     let mut best_val = NONE;
@@ -313,29 +324,7 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
         }
 
         let val = slice[i];
-
-        #[cfg(all(
-            target_arch = "x86_64",
-            target_feature = "avx512f",
-            target_feature = "avx512bw"
-        ))]
-        let mask = unsafe {
-            use core::arch::x86_64::{_mm256_mask_cmpeq_epi16_mask, _mm256_set1_epi16};
-            _mm256_mask_cmpeq_epi16_mask(0x1FF, full, _mm256_set1_epi16(val as i16)) as u32
-        };
-
-        #[cfg(not(all(
-            target_arch = "x86_64",
-            target_feature = "avx512f",
-            target_feature = "avx512bw"
-        )))]
-        let mask = {
-            let mut mask = 0u32;
-            for j in 0..FIRST_ORDER {
-                mask |= ((slice[j] == val) as u32) << j;
-            }
-            mask
-        };
+        let mask = equality_mask(slice.try_into().unwrap(), val);
 
         seen |= mask;
         let key = KEY_LUT[mask as usize];
