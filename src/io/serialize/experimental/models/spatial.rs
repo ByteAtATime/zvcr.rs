@@ -18,19 +18,6 @@ impl SectionPos {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct VoxelPos {
-    pub(crate) x: usize,
-    pub(crate) y: usize,
-    pub(crate) z: usize,
-}
-
-impl VoxelPos {
-    pub(crate) fn index(self) -> usize {
-        self.y * Y_STRIDE + self.z * Z_STRIDE + self.x
-    }
-}
-
 pub(crate) fn section_origin(slot: usize, section_y: usize) -> SectionOrigin {
     (
         (slot / SEGMENT_SIDE) * SECTION_SIDE,

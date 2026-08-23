@@ -18,6 +18,4 @@ pub(crate) enum ModelError {
     PaletteInconsistent { len: usize, bit_depth: usize },
     #[error("palette index {index} out of range {len}")]
     PaletteIndexOutOfRange { index: usize, len: usize },
-    #[error("invalid rank index {index} in final remap")]
-    InvalidRemapIndex { index: usize },
 }

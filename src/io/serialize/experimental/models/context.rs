@@ -2,9 +2,9 @@ use crate::definitions::{SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
 use crate::io::buffer::PooledBytes;
 use crate::io::serialize::experimental::models::error::ModelError;
 use crate::io::serialize::experimental::models::predictor::{
-    CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, HeadState, MAX_BIT_DEPTH, NONE, PRIMARY_TABLE_MASK,
-    Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, adapt, adapt_weights, combine,
-    gather_neighbors, gather_neighbors_fast, mix_logits,
+    CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, HeadState, MAX_BIT_DEPTH, NONE,
+    PRIMARY_TABLE_MASK, Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, adapt, adapt_weights,
+    combine, gather_neighbors, gather_neighbors_fast, mix_logits,
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
@@ -59,7 +59,8 @@ impl Modeler {
             for local_z in 0..SECTION_SIDE {
                 let z = origin_z + local_z;
                 let row = y * Y_STRIDE + z * Z_STRIDE + origin_x;
-                let fast_row = (pos.section_y > 0 || local_y >= 2) && (origin_z > 0 || local_z >= 2);
+                let fast_row =
+                    (pos.section_y > 0 || local_y >= 2) && (origin_z > 0 || local_z >= 2);
                 for local_x in 0..SECTION_SIDE {
                     let x = origin_x + local_x;
                     let idx = row + local_x;
@@ -71,7 +72,9 @@ impl Modeler {
                         gather_neighbors(voxels, idx, x, y, z, &mut state.neighbors);
                     }
                     let truth = voxels[idx];
-                    let head = self.predictor.encode_head(encoder, section, &mut state, truth);
+                    let head = self
+                        .predictor
+                        .encode_head(encoder, section, &mut state, truth);
                     if head.bit == 0 {
                         self.encode_residual(
                             encoder,
@@ -112,7 +115,8 @@ impl Modeler {
             for local_z in 0..SECTION_SIDE {
                 let z = origin_z + local_z;
                 let row = y * Y_STRIDE + z * Z_STRIDE + origin_x;
-                let fast_row = (pos.section_y > 0 || local_y >= 2) && (origin_z > 0 || local_z >= 2);
+                let fast_row =
+                    (pos.section_y > 0 || local_y >= 2) && (origin_z > 0 || local_z >= 2);
                 for local_x in 0..SECTION_SIDE {
                     let x = origin_x + local_x;
                     let idx = row + local_x;
@@ -478,7 +482,7 @@ fn build_grid(data: &RegionData, section_count: usize) -> Vec<u16> {
     voxels
 }
 
-pub(crate) fn decode_grid_ranked(
+pub(crate) fn decode_grid(
     payload: &PooledBytes,
     section_count: usize,
 ) -> Result<(Vec<u16>, Vec<u16>), ModelError> {
@@ -570,21 +574,6 @@ pub(crate) fn decode_grid_ranked(
     Ok((voxels, ranked))
 }
 
-pub(crate) fn decode_grid(
-    payload: &PooledBytes,
-    section_count: usize,
-) -> Result<Vec<u16>, ModelError> {
-    let (mut voxels, ranked) = decode_grid_ranked(payload, section_count)?;
-    for value in &mut voxels {
-        *value = *ranked
-            .get(*value as usize)
-            .ok_or(ModelError::InvalidRemapIndex {
-                index: *value as usize,
-            })?;
-    }
-    Ok(voxels)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,7 +613,11 @@ mod tests {
     fn grid_roundtrip_synthetic() {
         let original = synthetic_grid(3, 0xABCDEF);
         let payload = encode_grid(original.clone(), 3).unwrap();
-        let decoded = decode_grid(&PooledBytes::from_vec(payload), 3).unwrap();
+        let (mut decoded, ranked) = decode_grid(&PooledBytes::from_vec(payload), 3).unwrap();
+        for value in &mut decoded {
+            *value = ranked[*value as usize];
+        }
+
         let pos = original
             .iter()
             .zip(&decoded)
