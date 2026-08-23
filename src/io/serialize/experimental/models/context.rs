@@ -2,8 +2,9 @@ use crate::definitions::{SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
 use crate::io::buffer::PooledBytes;
 use crate::io::serialize::experimental::models::error::ModelError;
 use crate::io::serialize::experimental::models::predictor::{
-    CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, MAX_BIT_DEPTH, NONE, PRIMARY_TABLE_MASK,
-    Predictor, TREE_BAND_TABLE_MASK, adapt, adapt_weights, combine, mix_logits,
+    CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, HeadState, MAX_BIT_DEPTH, NONE, PRIMARY_TABLE_MASK,
+    Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, VoxelPos, adapt, adapt_weights, combine,
+    mix_logits,
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
@@ -47,8 +48,12 @@ impl Modeler {
             self.inverse[atom as usize] = i as u16;
         }
         let (origin_x, origin_z, origin_y) = pos.origin();
-        let mut neighbors = [NONE; CHAIN_SLOTS];
         let mut candidates = [NONE; CHAIN_SLOTS];
+        let mut state = HeadState::new();
+        let section = SectionMetadata {
+            section_y: pos.section_y,
+            palette_bits,
+        };
         for local_y in 0..SECTION_SIDE {
             let y = origin_y + local_y;
             for local_z in 0..SECTION_SIDE {
@@ -61,13 +66,9 @@ impl Modeler {
                     let head = self.predictor.encode_head(
                         encoder,
                         voxels,
-                        idx,
-                        x,
-                        y,
-                        z,
-                        pos.section_y,
-                        palette_bits,
-                        &mut neighbors,
+                        VoxelPos { idx, x, y, z },
+                        section,
+                        &mut state,
                         truth,
                     );
                     if head.bit == 0 {
@@ -75,7 +76,7 @@ impl Modeler {
                             encoder,
                             truth,
                             ResidualCtx {
-                                neighbors: &neighbors,
+                                neighbors: &state.neighbors,
                                 head: &head,
                                 candidates: &mut candidates,
                                 palette,
@@ -99,8 +100,12 @@ impl Modeler {
         palette_bits: usize,
     ) -> Result<(), ModelError> {
         let (origin_x, origin_z, origin_y) = pos.origin();
-        let mut neighbors = [NONE; CHAIN_SLOTS];
         let mut candidates = [NONE; CHAIN_SLOTS];
+        let mut state = HeadState::new();
+        let section = SectionMetadata {
+            section_y: pos.section_y,
+            palette_bits,
+        };
         for local_y in 0..SECTION_SIDE {
             let y = origin_y + local_y;
             for local_z in 0..SECTION_SIDE {
@@ -112,13 +117,9 @@ impl Modeler {
                     let head = self.predictor.decode_head(
                         decoder,
                         voxels,
-                        idx,
-                        x,
-                        y,
-                        z,
-                        pos.section_y,
-                        palette_bits,
-                        &mut neighbors,
+                        VoxelPos { idx, x, y, z },
+                        section,
+                        &mut state,
                     );
                     let value = if head.bit != 0 {
                         head.primary_value
@@ -126,7 +127,7 @@ impl Modeler {
                         self.decode_residual(
                             decoder,
                             ResidualCtx {
-                                neighbors: &neighbors,
+                                neighbors: &state.neighbors,
                                 head: &head,
                                 candidates: &mut candidates,
                                 palette,

@@ -443,48 +443,117 @@ pub(super) struct HeadLite {
     pub(super) bit: u32,
 }
 
+pub(super) struct HeadMemo {
+    key: [u16; CHAIN_SLOTS],
+    valid: bool,
+    primary_value: u16,
+    mask: u32,
+    hash: u32,
+    idx: [u32; MIX_INPUTS],
+}
+
+impl HeadMemo {
+    fn new() -> Self {
+        Self {
+            key: [NONE; CHAIN_SLOTS],
+            valid: false,
+            primary_value: NONE,
+            mask: 0,
+            hash: 0,
+            idx: [0; MIX_INPUTS],
+        }
+    }
+}
+
+pub(super) struct HeadState {
+    pub(super) neighbors: [u16; CHAIN_SLOTS],
+    memo: HeadMemo,
+}
+
+impl HeadState {
+    pub(super) fn new() -> Self {
+        Self {
+            neighbors: [NONE; CHAIN_SLOTS],
+            memo: HeadMemo::new(),
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub(super) struct VoxelPos {
+    pub(super) idx: usize,
+    pub(super) x: usize,
+    pub(super) y: usize,
+    pub(super) z: usize,
+}
+
+#[derive(Copy, Clone)]
+pub(super) struct SectionMetadata {
+    pub(super) section_y: usize,
+    pub(super) palette_bits: usize,
+}
+
 impl Predictor {
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn encode_head(
         &mut self,
         encoder: &mut Encoder,
         voxels: &[u16],
-        idx: usize,
-        x: usize,
-        y: usize,
-        z: usize,
-        section_y: usize,
-        palette_bits: usize,
-        neighbors: &mut [u16; CHAIN_SLOTS],
+        site: VoxelPos,
+        section: SectionMetadata,
+        state: &mut HeadState,
         truth: u16,
     ) -> HeadLite {
-        gather_neighbors(voxels, idx, x, y, z, neighbors);
-        let (primary_value, mask) = select_primary_value(neighbors);
+        let palette_bits = section.palette_bits;
+        let section_y = section.section_y;
+        let neighbors = &mut state.neighbors;
+        let memo = &mut state.memo;
+        gather_neighbors(voxels, site.idx, site.x, site.y, site.z, neighbors);
+        let (primary_value, mask, hash);
+        let mut idx_ctx;
+        if memo.valid && memo.key == *neighbors {
+            primary_value = memo.primary_value;
+            mask = memo.mask;
+            hash = memo.hash;
+            idx_ctx = memo.idx;
+            idx_ctx[3] = (mask << 8) | self.run.min(255);
+        } else {
+            let (pv, m) = select_primary_value(neighbors);
+            let ctx = primary_contexts(neighbors, pv as u32, m, self.run, section_y, palette_bits);
+            primary_value = pv;
+            mask = m;
+            hash = ctx.hash;
+            idx_ctx = ctx.idx;
+            memo.key = *neighbors;
+            memo.valid = true;
+            memo.primary_value = pv;
+            memo.mask = m;
+            memo.hash = ctx.hash;
+            memo.idx = ctx.idx;
+        }
         let bit = (truth == primary_value) as u32;
-        let ctx = primary_contexts(
-            neighbors,
-            primary_value as u32,
-            mask,
-            self.run,
-            section_y,
-            palette_bits,
-        );
+        let ctx = idx_ctx;
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
             probs[k] =
-                unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx.idx[k] as usize) } as u32;
+                unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx[k] as usize) } as u32;
         }
         let stretched = stretch_probs(&probs);
         let target = if bit != 0 { PROB_MAX } else { 0 };
         for k in 0..MIX_INPUTS {
             let current = probs[k] as i32;
             unsafe {
-                *self.primary.get_unchecked_mut(k).get_unchecked_mut(ctx.idx[k] as usize) =
+                *self
+                    .primary
+                    .get_unchecked_mut(k)
+                    .get_unchecked_mut(ctx[k] as usize) =
                     (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
             }
         }
-        let mixed = mix_stretched(unsafe { self.weights.get_unchecked(palette_bits) }, &stretched);
+        let mixed = mix_stretched(
+            unsafe { self.weights.get_unchecked(palette_bits) },
+            &stretched,
+        );
         encoder.encode(mixed, bit);
         adapt_weights_stretched(
             unsafe { self.weights.get_unchecked_mut(palette_bits) },
@@ -496,7 +565,7 @@ impl Predictor {
         HeadLite {
             primary_value,
             mask,
-            hash: ctx.hash,
+            hash,
             bit,
         }
     }
@@ -506,37 +575,57 @@ impl Predictor {
         &mut self,
         decoder: &mut Decoder,
         voxels: &[u16],
-        idx: usize,
-        x: usize,
-        y: usize,
-        z: usize,
-        section_y: usize,
-        palette_bits: usize,
-        neighbors: &mut [u16; CHAIN_SLOTS],
+        site: VoxelPos,
+        section: SectionMetadata,
+        state: &mut HeadState,
     ) -> HeadLite {
-        gather_neighbors(voxels, idx, x, y, z, neighbors);
-        let (primary_value, mask) = select_primary_value(neighbors);
-        let ctx = primary_contexts(
-            neighbors,
-            primary_value as u32,
-            mask,
-            self.run,
-            section_y,
-            palette_bits,
-        );
+        let palette_bits = section.palette_bits;
+        let section_y = section.section_y;
+        let neighbors = &mut state.neighbors;
+        let memo = &mut state.memo;
+        gather_neighbors(voxels, site.idx, site.x, site.y, site.z, neighbors);
+        let (primary_value, mask, hash);
+        let mut idx_ctx;
+        if memo.valid && memo.key == *neighbors {
+            primary_value = memo.primary_value;
+            mask = memo.mask;
+            hash = memo.hash;
+            idx_ctx = memo.idx;
+            idx_ctx[3] = (mask << 8) | self.run.min(255);
+        } else {
+            let (pv, m) = select_primary_value(neighbors);
+            let ctx = primary_contexts(neighbors, pv as u32, m, self.run, section_y, palette_bits);
+            primary_value = pv;
+            mask = m;
+            hash = ctx.hash;
+            idx_ctx = ctx.idx;
+            memo.key = *neighbors;
+            memo.valid = true;
+            memo.primary_value = pv;
+            memo.mask = m;
+            memo.hash = ctx.hash;
+            memo.idx = ctx.idx;
+        }
+        let ctx = idx_ctx;
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
             probs[k] =
-                unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx.idx[k] as usize) } as u32;
+                unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx[k] as usize) } as u32;
         }
         let stretched = stretch_probs(&probs);
-        let mixed = mix_stretched(unsafe { self.weights.get_unchecked(palette_bits) }, &stretched);
+        let mixed = mix_stretched(
+            unsafe { self.weights.get_unchecked(palette_bits) },
+            &stretched,
+        );
         let bit = decoder.decode(mixed);
         let target = if bit != 0 { PROB_MAX } else { 0 };
         for k in 0..MIX_INPUTS {
             let current = probs[k] as i32;
             unsafe {
-                *self.primary.get_unchecked_mut(k).get_unchecked_mut(ctx.idx[k] as usize) =
+                *self
+                    .primary
+                    .get_unchecked_mut(k)
+                    .get_unchecked_mut(ctx[k] as usize) =
                     (current + ((target - current) >> ADAPT_RATE_SHIFT)) as u16;
             }
         }
@@ -550,7 +639,7 @@ impl Predictor {
         HeadLite {
             primary_value,
             mask,
-            hash: ctx.hash,
+            hash,
             bit,
         }
     }
