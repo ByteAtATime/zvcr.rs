@@ -475,10 +475,10 @@ fn build_grid(data: &RegionData, section_count: usize) -> Vec<u16> {
     voxels
 }
 
-pub(crate) fn decode_grid(
+pub(crate) fn decode_grid_ranked(
     payload: &PooledBytes,
     section_count: usize,
-) -> Result<Vec<u16>, ModelError> {
+) -> Result<(Vec<u16>, Vec<u16>), ModelError> {
     let expected_voxels = SIDE * SIDE * section_count * SECTION_SIDE;
     let mut cursor = ByteCursor::new(payload.clone());
     let total_voxels = cursor.read_u64()? as usize;
@@ -564,6 +564,14 @@ pub(crate) fn decode_grid(
             }
         }
     }
+    Ok((voxels, ranked))
+}
+
+pub(crate) fn decode_grid(
+    payload: &PooledBytes,
+    section_count: usize,
+) -> Result<Vec<u16>, ModelError> {
+    let (mut voxels, ranked) = decode_grid_ranked(payload, section_count)?;
     for value in &mut voxels {
         *value = *ranked
             .get(*value as usize)

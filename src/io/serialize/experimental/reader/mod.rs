@@ -50,7 +50,7 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
     let biome_tags = meta::read_delta_tags(&mut cursor, &biome_counts, &biome_descriptors)?;
     let model_length = cursor.read_u32()? as usize;
     let model_payload = cursor.take_slice(model_length)?;
-    let block_grid = context::decode_grid(&model_payload, section_count)
+    let (block_grid, block_ranked) = context::decode_grid_ranked(&model_payload, section_count)
         .map_err(|e| ReadError::Generic(format!("block model decode failed: {e}")))?;
     let block_palette = meta::read_palette(&mut cursor)?;
     let biome_palette = meta::read_palette(&mut cursor)?;
@@ -97,7 +97,7 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
         },
         &slots,
         &mut storages.block,
-        Some(&block_grid),
+        Some((&block_grid, &block_ranked)),
     )?;
     sweeps::sweep_domain(
         &mut meta_cursor,

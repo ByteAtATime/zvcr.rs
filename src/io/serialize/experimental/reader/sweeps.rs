@@ -6,7 +6,7 @@ use crate::io::serialize::experimental::layout::{self, BUCKETS, Domain};
 use crate::io::serialize::experimental::models::spatial::{for_each_section_cell, section_origin};
 use crate::io::serialize::primitives::ByteCursor;
 use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
-use crate::region::palette::{DIRECT_PALETTE, Palette};
+use crate::region::palette::{DIRECT_PALETTE, PackScratch, Palette};
 
 pub(super) struct RegionSlots<'a> {
     pub(super) presence: &'a [bool; SEGMENTS_PER_REGION],
@@ -32,13 +32,14 @@ pub(super) fn sweep_domain<const UNPACKED_SIZE: usize>(
     tables: &DomainTables,
     slots: &RegionSlots,
     storages: &mut [Vec<PackedSnapshot<UNPACKED_SIZE>>],
-    level_zero_grid: Option<&[u16]>,
+    level_zero: Option<(&[u16], &[u16])>,
 ) -> Result<(), ReadError> {
-    if level_zero_grid.is_some() && UNPACKED_SIZE != crate::definitions::SECTION_SIZE_BLOCKS {
+    if level_zero.is_some() && UNPACKED_SIZE != crate::definitions::SECTION_SIZE_BLOCKS {
         return Err(ReadError::Generic(
             "modeled level zero grid requires block sized sections".to_string(),
         ));
     }
+    let mut owned_scratch = level_zero.map(|_| PackScratch::new());
     let mut local_atoms: Vec<u16> = Vec::new();
     let mut snapshot_index = 0usize;
     let mut single_index = 0usize;
@@ -56,9 +57,10 @@ pub(super) fn sweep_domain<const UNPACKED_SIZE: usize>(
                 }
                 let timestamp = tables.timestamps[snapshot_index];
                 snapshot_index += 1;
-                let snapshot = if let Some(grid) = level_zero_grid.filter(|_| level == 0) {
+                let snapshot = if let Some((grid, remap)) = level_zero.filter(|_| level == 0) {
+                    let scratch = owned_scratch.as_mut().unwrap();
                     PackedSnapshot {
-                        data: pack_grid_section(grid, slot, section_index)?,
+                        data: pack_grid_section(grid, remap, slot, section_index, scratch)?,
                         timestamp,
                     }
                 } else {
@@ -100,8 +102,10 @@ pub(super) fn sweep_domain<const UNPACKED_SIZE: usize>(
 
 fn pack_grid_section<const UNPACKED_SIZE: usize>(
     grid: &[u16],
+    remap: &[u16],
     slot: usize,
     section_index: usize,
+    scratch: &mut PackScratch,
 ) -> Result<PackedData<UNPACKED_SIZE>, ReadError> {
     if UNPACKED_SIZE != crate::definitions::SECTION_SIZE_BLOCKS {
         return Err(ReadError::Generic(
@@ -110,9 +114,9 @@ fn pack_grid_section<const UNPACKED_SIZE: usize>(
     }
     let mut cells = [0u16; UNPACKED_SIZE];
     for_each_section_cell(section_origin(slot, section_index), |idx, i| {
-        cells[i] = grid[idx];
+        cells[i] = remap[grid[idx] as usize];
     });
-    Ok(PackedData::pack(&cells))
+    Ok(PackedData::pack_with(&cells, scratch))
 }
 
 fn read_paletted_snapshot<const UNPACKED_SIZE: usize>(
