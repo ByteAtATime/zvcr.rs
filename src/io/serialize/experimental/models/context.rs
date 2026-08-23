@@ -26,13 +26,15 @@ fn bit_depth(distinct_len: usize) -> usize {
 struct Modeler {
     predictor: Predictor,
     inverse: Box<[u16]>,
+    miss: Vec<u8>,
 }
 
 impl Modeler {
-    fn new() -> Self {
+    fn new(len: usize) -> Self {
         Self {
             predictor: Predictor::new(),
             inverse: vec![0u16; ATOM_COUNT].into_boxed_slice(),
+            miss: vec![0u8; len],
         }
     }
 
@@ -72,9 +74,14 @@ impl Modeler {
                         gather_neighbors(voxels, idx, x, y, z, &mut state.neighbors);
                     }
                     let truth = voxels[idx];
-                    let head = self
-                        .predictor
-                        .encode_head(encoder, section, &mut state, truth);
+                    let head = self.predictor.encode_head(
+                        encoder,
+                        section,
+                        &mut state,
+                        truth,
+                        &mut self.miss,
+                        idx,
+                    );
                     if head.bit == 0 {
                         self.encode_residual(
                             encoder,
@@ -127,7 +134,13 @@ impl Modeler {
                     } else {
                         gather_neighbors(voxels, idx, x, y, z, &mut state.neighbors);
                     }
-                    let head = self.predictor.decode_head(decoder, section, &mut state);
+                    let head = self.predictor.decode_head(
+                        decoder,
+                        section,
+                        &mut state,
+                        &mut self.miss,
+                        idx,
+                    );
                     let value = if head.bit != 0 {
                         head.primary_value
                     } else {
@@ -367,7 +380,7 @@ fn encode_grid(mut voxels: Vec<u16>, section_count: usize) -> Result<Vec<u8>, Mo
         palettes: Vec::new(),
     };
     let mut encoder = Encoder::default();
-    let mut modeler = Modeler::new();
+    let mut modeler = Modeler::new(voxels.len());
     let mut scratch = Scratch::new();
 
     for section_y in 0..section_count {
@@ -514,7 +527,7 @@ pub(crate) fn decode_grid(
     let arithmetic = &cursor.data[cursor.pos..];
 
     let mut decoder = Decoder::new(arithmetic);
-    let mut modeler = Modeler::new();
+    let mut modeler = Modeler::new(expected_voxels);
     let mut palette_scratch = Scratch::new();
     let mut voxels = vec![0u16; expected_voxels];
 

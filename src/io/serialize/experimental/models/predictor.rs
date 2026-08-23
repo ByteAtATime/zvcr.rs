@@ -60,6 +60,26 @@ const SUBSET_CONTEXTS: [(u32, &[usize]); 4] = [
     (0x27D4_EB2F, &[1, 2]),
 ];
 
+#[inline(always)]
+fn cluster_of(neighbors: &[u16; CHAIN_SLOTS], miss: &[u8], idx: usize) -> u8 {
+    let west_miss = if neighbors[0] != NONE {
+        unsafe { *miss.get_unchecked(idx - 1) }
+    } else {
+        0
+    };
+    let lower_miss = if neighbors[1] != NONE {
+        unsafe { *miss.get_unchecked(idx - Y_STRIDE) }
+    } else {
+        0
+    };
+    let north_miss = if neighbors[2] != NONE {
+        unsafe { *miss.get_unchecked(idx - Z_STRIDE) }
+    } else {
+        0
+    };
+    west_miss | (lower_miss << 1) | (north_miss << 2)
+}
+
 #[inline]
 pub(super) fn combine(hash: u32, value: u32) -> u32 {
     (hash ^ value.wrapping_mul(HASH_MIX))
@@ -440,7 +460,7 @@ pub(super) struct Predictor {
     pub(super) chain: Box<[[u16; CHAIN_TABLE_SIZE]; CHAIN_SLOTS]>,
     pub(super) tree: Box<[[u16; PRIMARY_TABLE_SIZE]; 2]>,
     pub(super) tree_band: Box<[u16]>,
-    pub(super) weights: Box<[[i32; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * CONF_BUCKETS]>,
+    pub(super) weights: Box<[[i32; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8]>,
     pub(super) tree_weights: Box<[[i32; TREE_INPUTS]; MAX_BIT_DEPTH + 1]>,
     pub(super) run: u32,
 }
@@ -460,7 +480,7 @@ impl Predictor {
             tree: filled_tables::<PRIMARY_TABLE_SIZE, 2>(PROB_HALF),
             tree_band: Box::new([PROB_HALF; TREE_BAND_TABLE_SIZE]),
             weights: Box::new([[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS];
-                (MAX_BIT_DEPTH + 1) * CONF_BUCKETS]),
+                (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8]),
             tree_weights: Box::new([[TREE_MIXER_SEED_WEIGHT; TREE_INPUTS]; MAX_BIT_DEPTH + 1]),
             run: 0,
         }
@@ -524,6 +544,8 @@ impl Predictor {
         section: SectionMetadata,
         state: &mut HeadState,
         truth: u16,
+        miss: &mut [u8],
+        idx: usize,
     ) -> HeadLite {
         let palette_bits = section.palette_bits;
         let section_y = section.section_y;
@@ -569,9 +591,10 @@ impl Predictor {
                     (current + ((target - current) >> HEAD_ADAPT_SHIFT)) as u16;
             }
         }
+        let cluster = cluster_of(&state.neighbors, miss, idx);
         let conf =
             (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
-        let weight_row = palette_bits * CONF_BUCKETS + conf;
+        let weight_row = palette_bits * CONF_BUCKETS * 8 + conf * 8 + cluster as usize;
         let mixed = mix_stretched(
             unsafe { self.weights.get_unchecked(weight_row) },
             &stretched,
@@ -584,6 +607,7 @@ impl Predictor {
             mixed,
         );
         self.run = if bit != 0 { (self.run + 1).min(255) } else { 0 };
+        unsafe { *miss.get_unchecked_mut(idx) = (bit == 0) as u8 };
         HeadLite {
             primary_value,
             mask,
@@ -598,6 +622,8 @@ impl Predictor {
         decoder: &mut Decoder,
         section: SectionMetadata,
         state: &mut HeadState,
+        miss: &mut [u8],
+        idx: usize,
     ) -> HeadLite {
         let palette_bits = section.palette_bits;
         let section_y = section.section_y;
@@ -631,9 +657,10 @@ impl Predictor {
                 unsafe { *self.primary.get_unchecked(k).get_unchecked(ctx[k] as usize) } as u32;
         }
         let stretched = stretch_probs(&probs);
+        let cluster = cluster_of(&state.neighbors, miss, idx);
         let conf =
             (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
-        let weight_row = palette_bits * CONF_BUCKETS + conf;
+        let weight_row = palette_bits * CONF_BUCKETS * 8 + conf * 8 + cluster as usize;
         let mixed = mix_stretched(
             unsafe { self.weights.get_unchecked(weight_row) },
             &stretched,
@@ -657,6 +684,7 @@ impl Predictor {
             mixed,
         );
         self.run = if bit != 0 { (self.run + 1).min(255) } else { 0 };
+        unsafe { *miss.get_unchecked_mut(idx) = (bit == 0) as u8 };
         HeadLite {
             primary_value,
             mask,
