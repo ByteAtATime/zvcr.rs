@@ -538,6 +538,28 @@ impl HeadMemo {
             idx: [0; MIX_INPUTS],
         }
     }
+
+    #[inline]
+    fn matches(&self, neighbors: &[u16; CHAIN_SLOTS]) -> bool {
+        macro_rules! slots {
+            ($($i:literal),*) => {{
+                const COVERED: u32 = 0 $(| 1 << $i)*;
+                const ALL: u32 = (1 << CHAIN_SLOTS) - 1;
+                const {
+                    assert!(
+                        COVERED == ALL,
+                        "slot list must cover every CHAIN_SLOTS index exactly once"
+                    )
+                };
+                self.valid
+                    $(&& unsafe {
+                        self.key.as_ptr().add($i).read_volatile()
+                            == neighbors.as_ptr().add($i).read_volatile()
+                    })*
+            }};
+        }
+        slots!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+    }
 }
 
 pub(super) struct HeadState {
@@ -576,7 +598,7 @@ impl Predictor {
         let memo = &mut state.memo;
         let (primary_value, mask, hash);
         let mut idx_ctx;
-        if memo.valid && memo.key == state.neighbors {
+        if memo.matches(&state.neighbors) {
             primary_value = memo.primary_value;
             mask = memo.mask;
             hash = memo.hash;
@@ -660,7 +682,7 @@ impl Predictor {
         let memo = &mut state.memo;
         let (primary_value, mask, hash);
         let mut idx_ctx;
-        if memo.valid && memo.key == state.neighbors {
+        if memo.matches(&state.neighbors) {
             primary_value = memo.primary_value;
             mask = memo.mask;
             hash = memo.hash;
