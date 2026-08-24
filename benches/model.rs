@@ -1,50 +1,32 @@
 mod fixtures;
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use std::path::{Path, PathBuf};
-use zvcr::definitions::{SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
+use std::path::PathBuf;
+use zvcr::definitions::{
+    REGION_SIDELENGTH_SEGMENTS, SEGMENT_SIDELENGTH_BLOCKS,
+};
 use zvcr::{
     ExperimentalReader, ExperimentalWriter, Reader, Writer, ZSTD_COMPRESSION_LEVEL_DEFAULT,
 };
 use zvcr::raw::RegionData;
 
-const KEPT_SEGMENTS: usize = 8;
+const GRID_SIDE: usize = REGION_SIDELENGTH_SEGMENTS * SEGMENT_SIDELENGTH_BLOCKS;
 
-fn load_region() -> (PathBuf, RegionData, usize) {
-    let path = fixtures::discover_region_file("ZVCR_MODEL_BENCH_FILE");
-    trim_to_bench_region(&path).unwrap_or_else(|e| panic!("{e}"))
+fn grid_voxels(data: &RegionData) -> usize {
+    GRID_SIDE * GRID_SIDE * data.dimension.section_count() * SEGMENT_SIDELENGTH_BLOCKS
 }
 
-fn trim_to_bench_region(path: &Path) -> Result<(PathBuf, RegionData, usize), String> {
-    let mut data = fixtures::decode_region(path)?;
-    let mut kept = 0usize;
-    let mut voxels = 0usize;
-    for slot in data.segments.iter_mut() {
-        let Some(segment) = slot else {
-            continue;
-        };
-        if kept == KEPT_SEGMENTS {
-            *slot = None;
-            continue;
-        }
-        kept += 1;
-        for section in &segment.block_sections {
-            if !section.snapshots().is_empty() {
-                voxels += SECTION_SIZE_BLOCKS;
-            }
-        }
-    }
-    if kept == 0 || voxels == 0 {
-        return Err(format!("no voxel data found in {path:?}"));
-    }
-    Ok((path.to_path_buf(), data, voxels))
+fn load_region() -> (PathBuf, RegionData) {
+    let path = fixtures::discover_region_file("ZVCR_MODEL_BENCH_FILE");
+    let data = fixtures::decode_region(&path).unwrap_or_else(|e| panic!("{e}"));
+    (path, data)
 }
 
 fn bench_encode(c: &mut Criterion, data: &RegionData, voxels: usize) {
     let writer = ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT);
     let mut group = c.benchmark_group("model");
     group.throughput(Throughput::Elements(voxels as u64));
-    group.sample_size(20);
+    group.sample_size(10);
     group.bench_function("encode_region", |b| {
         b.iter(|| black_box(writer.to_bytes(data).unwrap()));
     });
@@ -57,7 +39,7 @@ fn bench_decode(c: &mut Criterion, data: &RegionData, voxels: usize) {
     let reader = ExperimentalReader::new();
     let mut group = c.benchmark_group("model");
     group.throughput(Throughput::Elements(voxels as u64));
-    group.sample_size(20);
+    group.sample_size(10);
     group.bench_function("decode_region", |b| {
         b.iter(|| black_box(reader.from_bytes(&encoded).unwrap()));
     });
@@ -65,9 +47,10 @@ fn bench_decode(c: &mut Criterion, data: &RegionData, voxels: usize) {
 }
 
 fn bench_model(c: &mut Criterion) {
-    let (path, data, voxels) = load_region();
+    let (path, data) = load_region();
+    let voxels = grid_voxels(&data);
     eprintln!(
-        "model bench data: {} voxels from {} (kept {KEPT_SEGMENTS} of {SEGMENTS_PER_REGION} segments)",
+        "model bench data: {} grid voxels from {}",
         voxels,
         path.display()
     );
