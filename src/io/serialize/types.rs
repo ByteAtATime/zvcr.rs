@@ -2,6 +2,7 @@ use crate::raw::RegionData;
 use std::path::Path;
 
 pub trait Reader {
+    #[allow(clippy::wrong_self_convention)]
     fn from_bytes(&self, bytes: &[u8]) -> Result<RegionData, String>;
 
     fn read(&self, src: &Path) -> Result<RegionData, String> {

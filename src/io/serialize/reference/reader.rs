@@ -20,6 +20,11 @@ use std::ops::{Deref, DerefMut, Range};
 use std::path::Path;
 use std::sync::Arc;
 
+pub(crate) type SectionGroup<const N: usize> = (
+    Arc<Vec<PackedSnapshot<N>>>,
+    Vec<Range<usize>>,
+);
+
 pub(crate) struct ReadHandle {
     pub(crate) ctx: Context,
     cursor: ByteCursor,
@@ -185,7 +190,7 @@ impl ReadHandle {
         &mut self,
         section_count: usize,
         palette_table: &[Palette],
-    ) -> Result<(Arc<Vec<PackedSnapshot<N>>>, Vec<Range<usize>>), ReadError> {
+    ) -> Result<SectionGroup<N>, ReadError> {
         let mut shared: Vec<PackedSnapshot<N>> = Vec::new();
         let mut ranges: Vec<Range<usize>> = Vec::with_capacity(section_count);
 
