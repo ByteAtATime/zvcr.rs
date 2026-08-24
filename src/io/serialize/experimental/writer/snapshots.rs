@@ -26,7 +26,7 @@ pub(super) fn write_domain<const UNPACKED_SIZE: usize>(
     sections: fn(&SegmentData) -> &[PackedDeltaData<UNPACKED_SIZE>],
 ) -> Result<(), String> {
     GLOBAL_LUT
-        .with(|cell| write_domain_streams(streams, data, domain, sections, &mut *cell.borrow_mut()))
+        .with(|cell| write_domain_streams(streams, data, domain, sections, &mut cell.borrow_mut()))
 }
 
 fn write_domain_streams<const UNPACKED_SIZE: usize>(
@@ -75,7 +75,7 @@ fn write_domain_streams<const UNPACKED_SIZE: usize>(
                     Data::Single(atom) => put_u16_le(&mut streams.singles, *atom),
                     Data::Paletted(paletted) => {
                         PACK.with(|pack| {
-                            emit_paletted(streams, domain, paletted, lut, &mut *pack.borrow_mut())
+                            emit_paletted(streams, domain, paletted, lut, &mut pack.borrow_mut())
                         })?;
                     }
                 }

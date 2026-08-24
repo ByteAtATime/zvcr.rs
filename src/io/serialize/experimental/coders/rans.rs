@@ -14,7 +14,7 @@ struct DivEntry {
 const fn div_magic(d: u32) -> DivEntry {
     let l = 31 - d.leading_zeros();
     let pow = 1u128 << (33 + l);
-    let m = ((pow + d as u128 - 1) / d as u128) as u64;
+    let m = pow.div_ceil(d as u128) as u64;
     DivEntry {
         magic32: (m - (1 << 32) - 1) as u32,
         shift: (33 + l) as u8,
@@ -22,7 +22,7 @@ const fn div_magic(d: u32) -> DivEntry {
     }
 }
 
-const DIV_TABLE: [DivEntry; M as usize + 1] = {
+static DIV_TABLE: [DivEntry; M as usize + 1] = {
     let mut t = [DivEntry {
         magic32: 0,
         shift: 0,
@@ -153,7 +153,9 @@ pub fn build_freq_table(data: &[u8]) -> ([u16; 256], [u16; 256]) {
     if total > 0 {
         for s in 0..256 {
             if counts[s] > 0 {
-                let scaled = (counts[s] * (M as u64) / total) as u32;
+                let scaled = (counts[s] * (M as u64))
+                    .checked_div(total)
+                    .expect("total is nonzero");
                 freq[s] = scaled.max(1) as u16;
             }
         }
@@ -258,12 +260,13 @@ mod tests {
     }
 
     fn test_datasets() -> Vec<Vec<u8>> {
-        let mut datasets = Vec::new();
-        datasets.push(b"".to_vec());
-        datasets.push(b"a".to_vec());
-        datasets.push(b"ab".to_vec());
-        datasets.push(b"hello, world!".to_vec());
-        datasets.push((0u8..=255).collect::<Vec<_>>());
+        let mut datasets = vec![
+            b"".to_vec(),
+            b"a".to_vec(),
+            b"ab".to_vec(),
+            b"hello, world!".to_vec(),
+            (0u8..=255).collect::<Vec<_>>(),
+        ];
         let mut state: u64 = 1;
         let mut data = Vec::with_capacity(64 * 1024);
         for _ in 0..(64 * 1024) {
@@ -298,7 +301,7 @@ mod tests {
             for _ in 0..1024 {
                 assert_eq!(fast_div(x, entry), x / freq, "freq={freq} x={x}");
                 x = x.wrapping_mul(1103515245).wrapping_add(12345);
-                x = x & 0x7FFFFFFF;
+                x &= 0x7FFFFFFF;
                 if x < L {
                     x += L;
                 }

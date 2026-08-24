@@ -466,9 +466,7 @@ pub fn adapt_weights_stretched(
         updates[k] = (error * stretched[k]) >> 13;
     }
     for k in 0..MIX_INPUTS {
-        weights[k] = (weights[k] + updates[k])
-            .max(-WEIGHT_LIMIT)
-            .min(WEIGHT_LIMIT);
+        weights[k] = (weights[k] + updates[k]).clamp(-WEIGHT_LIMIT, WEIGHT_LIMIT);
     }
 }
 
@@ -807,16 +805,16 @@ mod tests {
         let value_scaled_hash = combine(neighborhood, primary_value.wrapping_mul(3));
         PrimaryCtx {
             idx: [
-                (neighborhood & PRIMARY_TABLE_MASK) as u32,
-                (rotated_neighborhood & PRIMARY_TABLE_MASK) as u32,
-                (distance_two & PRIMARY_TABLE_MASK) as u32,
+                neighborhood & PRIMARY_TABLE_MASK,
+                rotated_neighborhood & PRIMARY_TABLE_MASK,
+                distance_two & PRIMARY_TABLE_MASK,
                 (mask << 8) | run.min(255),
                 combine(primary_value, mask << 1) & PRIMARY_TABLE_MASK,
                 value_scaled_hash & PRIMARY_TABLE_MASK,
                 ((section_y as u32) << 5) | palette_bits as u32,
-                (diagonal & PRIMARY_TABLE_MASK) as u32,
-                (axial & PRIMARY_TABLE_MASK) as u32,
-                (lower_pair & PRIMARY_TABLE_MASK) as u32,
+                diagonal & PRIMARY_TABLE_MASK,
+                axial & PRIMARY_TABLE_MASK,
+                lower_pair & PRIMARY_TABLE_MASK,
             ],
             hash: neighborhood,
         }
