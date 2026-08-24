@@ -9,7 +9,6 @@ use crate::region::palette::{DIRECT_PALETTE, Palette};
 use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
-use crate::version::*;
 use ahash::AHashMap;
 use std::fs;
 use std::path::Path;
@@ -184,7 +183,7 @@ impl WriteHandle {
     pub(crate) fn serialize_file(&mut self, file: &File) -> Result<(), String> {
         self.ctx.initialize_section_count(file.dimension_type);
         put_bytes(&mut self.data, EXTENSION.as_bytes());
-        put_u8(&mut self.data, Version::Zvcr3d1000 as u8);
+        put_u8(&mut self.data, file.version as u8);
         put_u8(&mut self.data, file.dimension_type as u8);
         put_u16_le(&mut self.data, file.protocol_version);
 
