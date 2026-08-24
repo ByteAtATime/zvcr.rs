@@ -58,6 +58,12 @@ impl PackScratch {
     }
 }
 
+impl Default for PackScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn build_palette_with<const UNPACKED_SIZE: usize>(
     data: &UnpackedData<UNPACKED_SIZE>,
     scratch: &mut PackScratch,

@@ -127,6 +127,12 @@ impl<'a> RansDecoder<'a> {
     }
 }
 
+impl Default for RansEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[inline(always)]
 fn fast_div(x: u32, d: DivEntry) -> u32 {
     let m = d.magic32 as u64 + (1u64 << 32) + 1;
