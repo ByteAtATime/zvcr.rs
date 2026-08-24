@@ -75,6 +75,47 @@ pub(crate) fn extract_indices(source_bits: usize, bytes: &[u8], out: &mut [u8]) 
     }
 }
 
+pub(crate) fn hist_indices(source_bits: usize, bytes: &[u8], hist: &mut [u16; 256]) {
+    match source_bits {
+        8 => {
+            for &byte in bytes {
+                let index = byte as usize;
+                hist[index] = hist[index].wrapping_add(1);
+            }
+        }
+        4 => {
+            for &byte in bytes {
+                let byte = byte as usize;
+                let lo = byte & 0x0F;
+                let hi = byte >> 4;
+                hist[lo] = hist[lo].wrapping_add(1);
+                hist[hi] = hist[hi].wrapping_add(1);
+            }
+        }
+        2 => {
+            for &byte in bytes {
+                let byte = byte as usize;
+                let i0 = byte & 0b11;
+                let i1 = (byte >> 2) & 0b11;
+                let i2 = (byte >> 4) & 0b11;
+                let i3 = byte >> 6;
+                hist[i0] = hist[i0].wrapping_add(1);
+                hist[i1] = hist[i1].wrapping_add(1);
+                hist[i2] = hist[i2].wrapping_add(1);
+                hist[i3] = hist[i3].wrapping_add(1);
+            }
+        }
+        1 => {
+            for &byte in bytes {
+                let ones = byte.count_ones() as u16;
+                hist[1] = hist[1].wrapping_add(ones);
+                hist[0] = hist[0].wrapping_add(8 - ones);
+            }
+        }
+        _ => unreachable!("unsupported source bits per entry {source_bits}"),
+    }
+}
+
 pub(crate) fn extract_direct_atoms(bytes: &[u8], wide: &mut [u16]) {
     for (atom, pair) in wide.iter_mut().zip(bytes.chunks_exact(2)) {
         *atom = u16::from_le_bytes([pair[0], pair[1]]);

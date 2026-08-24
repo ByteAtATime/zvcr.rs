@@ -42,14 +42,60 @@ pub(crate) fn for_each_section_cell(origin: SectionOrigin, mut visit: impl FnMut
     }
 }
 
-pub(super) fn fill_section(
+pub(super) fn fill_section_mapped(
     voxels: &mut [u16],
     origin: SectionOrigin,
     values: &[u16; crate::definitions::SECTION_SIZE_BLOCKS],
+    rank: &[u16],
 ) {
-    for_each_section_cell(origin, |idx, i| voxels[idx] = values[i]);
+    let (origin_x, origin_z, origin_y) = origin;
+    let mut i = 0usize;
+    for local_y in 0..SECTION_SIDE {
+        let plane = (origin_y + local_y) * Y_STRIDE;
+        for local_z in 0..SECTION_SIDE {
+            let row = plane + (origin_z + local_z) * Z_STRIDE + origin_x;
+            for local_x in 0..SECTION_SIDE {
+                voxels[row + local_x] = rank[values[i] as usize];
+                i += 1;
+            }
+        }
+    }
 }
 
 pub(super) fn fill_uniform(voxels: &mut [u16], origin: SectionOrigin, value: u16) {
-    for_each_section_cell(origin, |idx, _| voxels[idx] = value);
+    let (origin_x, origin_z, origin_y) = origin;
+    for local_y in 0..SECTION_SIDE {
+        let plane = (origin_y + local_y) * Y_STRIDE;
+        for local_z in 0..SECTION_SIDE {
+            let row = plane + (origin_z + local_z) * Z_STRIDE + origin_x;
+            voxels[row..row + SECTION_SIDE].fill(value);
+        }
+    }
+}
+
+pub(super) fn fill_section_lut(
+    voxels: &mut [u16],
+    origin: SectionOrigin,
+    indices: &[u8],
+    lut: &[u16; 256],
+    usable: usize,
+    missing: u16,
+) {
+    let (origin_x, origin_z, origin_y) = origin;
+    let mut i = 0usize;
+    for local_y in 0..SECTION_SIDE {
+        let plane = (origin_y + local_y) * Y_STRIDE;
+        for local_z in 0..SECTION_SIDE {
+            let row = plane + (origin_z + local_z) * Z_STRIDE + origin_x;
+            let take = usable.saturating_sub(i).min(SECTION_SIDE);
+            for (cell, &index) in voxels[row..row + SECTION_SIDE]
+                .iter_mut()
+                .zip(indices[i..i + take].iter())
+            {
+                *cell = lut[index as usize];
+            }
+            voxels[row + take..row + SECTION_SIDE].fill(missing);
+            i += SECTION_SIDE;
+        }
+    }
 }

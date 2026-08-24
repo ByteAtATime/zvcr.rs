@@ -8,13 +8,15 @@ use crate::io::serialize::experimental::models::predictor::{
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
-    SECTION_SIDE, SEGMENT_SIDE, SIDE, SectionPos, Y_STRIDE, Z_STRIDE, fill_section, fill_uniform,
-    for_each_section_cell, section_origin,
+    SECTION_SIDE, SEGMENT_SIDE, SIDE, SectionPos, Y_STRIDE, Z_STRIDE, fill_section_lut,
+    fill_section_mapped, fill_uniform, section_origin,
 };
+use crate::io::serialize::experimental::pack::{extract_indices, hist_indices};
 use crate::io::serialize::primitives::{
     ByteCursor, put_bytes, put_u8, put_u16_le, put_u32_le, put_u64_le,
 };
 use crate::raw::RegionData;
+use crate::region::packed_data::Data;
 use crate::region::palette::ATOM_COUNT;
 
 const MODE: u8 = 1;
@@ -367,18 +369,33 @@ impl Modeler {
 }
 
 struct Scratch {
-    hist: Box<[u32]>,
-    distinct: Box<[u16]>,
-    palette: Box<[u16]>,
+    idx_hist: Box<[u16; 256]>,
+    lut: Box<[u16; 256]>,
+    seen: Box<[u8; ATOM_COUNT]>,
+    indices: Box<[u8; SECTION_SIZE_BLOCKS]>,
+    seen_gen: u8,
+    distinct: Box<[u16; SECTION_SIZE_BLOCKS]>,
 }
 
 impl Scratch {
     fn new() -> Self {
         Self {
-            hist: vec![0u32; ATOM_COUNT].into_boxed_slice(),
-            distinct: vec![0u16; SECTION_SIZE_BLOCKS].into_boxed_slice(),
-            palette: vec![0u16; SECTION_SIZE_BLOCKS].into_boxed_slice(),
+            idx_hist: Box::new([0; 256]),
+            lut: Box::new([0; 256]),
+            seen: Box::new([0; ATOM_COUNT]),
+            indices: Box::new([0; SECTION_SIZE_BLOCKS]),
+            seen_gen: 0,
+            distinct: Box::new([0; SECTION_SIZE_BLOCKS]),
         }
+    }
+
+    fn next_generation(&mut self) -> u8 {
+        self.seen_gen = self.seen_gen.wrapping_add(1);
+        if self.seen_gen == 0 {
+            self.seen.fill(0);
+            self.seen_gen = 1;
+        }
+        self.seen_gen
     }
 }
 
@@ -392,15 +409,19 @@ pub(crate) fn encode_region(
     data: &RegionData,
     section_count: usize,
 ) -> Result<Vec<u8>, ModelError> {
-    let voxels = build_grid(data, section_count);
-    encode_grid(voxels, section_count)
+    let total_cells = SIDE * SIDE * section_count * SECTION_SIDE;
+    let mut hist = vec![0u32; ATOM_COUNT];
+    let mut filled_cells = 0usize;
+    let mut scratch = Scratch::new();
+    count_section_atoms(data, &mut hist, &mut filled_cells, &mut scratch);
+    hist[0] += (total_cells - filled_cells) as u32;
+    let (ranked, rank) = build_ranking(&hist);
+
+    let voxels = build_grid(data, section_count, &rank, &mut scratch);
+    encode_grid(voxels, section_count, data, &ranked, &rank, &mut scratch)
 }
 
-fn encode_grid(mut voxels: Vec<u16>, section_count: usize) -> Result<Vec<u8>, ModelError> {
-    let mut hist = vec![0u32; ATOM_COUNT];
-    for &value in &voxels {
-        hist[value as usize] += 1;
-    }
+fn build_ranking(hist: &[u32]) -> (Vec<u16>, Vec<u16>) {
     let mut ranked: Vec<u16> = (0..ATOM_COUNT)
         .filter(|&atom| hist[atom] != 0)
         .map(|atom| atom as u16)
@@ -410,10 +431,128 @@ fn encode_grid(mut voxels: Vec<u16>, section_count: usize) -> Result<Vec<u8>, Mo
     for (r, &atom) in ranked.iter().enumerate() {
         rank[atom as usize] = r as u16;
     }
-    for value in &mut voxels {
-        *value = rank[*value as usize];
-    }
+    (ranked, rank)
+}
 
+fn usable_span(bits: usize, bytes: &[u8]) -> (&[u8], usize) {
+    let usable = (bytes.len() * 8 / bits).min(SECTION_SIZE_BLOCKS);
+    (&bytes[..usable * bits / 8], usable)
+}
+
+fn count_section_atoms(
+    data: &RegionData,
+    hist: &mut [u32],
+    filled_cells: &mut usize,
+    scratch: &mut Scratch,
+) {
+    for segment in data.segments.iter().flatten() {
+        for section in &segment.block_sections {
+            let Some(snapshot) = section.snapshots().first() else {
+                continue;
+            };
+            *filled_cells += SECTION_SIZE_BLOCKS;
+            match &snapshot.data.data {
+                Data::Single(atom) => hist[*atom as usize] += SECTION_SIZE_BLOCKS as u32,
+                Data::Paletted(paletted) => {
+                    let bytes = &paletted.packed_long_array[..];
+                    let usable;
+                    if paletted.palette.direct() {
+                        usable = (bytes.len() / 2).min(SECTION_SIZE_BLOCKS);
+                        for pair in bytes.chunks_exact(2).take(usable) {
+                            let atom = u16::from_le_bytes([pair[0], pair[1]]) as usize;
+                            hist[atom] += 1;
+                        }
+                    } else {
+                        let bits = paletted.palette.bits_per_entry;
+                        let (packed, cells) = usable_span(bits, bytes);
+                        usable = cells;
+                        let idx_hist = &mut *scratch.idx_hist;
+                        idx_hist.fill(0);
+                        hist_indices(bits, packed, idx_hist);
+                        let palette = &paletted.palette.palette;
+                        for (index, &count) in idx_hist[..palette.len()].iter().enumerate() {
+                            if count != 0 {
+                                hist[palette[index] as usize] += count as u32;
+                            }
+                        }
+                    }
+                    hist[0] += (SECTION_SIZE_BLOCKS - usable) as u32;
+                }
+            }
+        }
+    }
+}
+
+enum SectionScan {
+    Absent,
+    Uniform(u16),
+    Palette { distinct_len: usize },
+}
+
+fn scan_section(
+    snapshot: Option<&Data<SECTION_SIZE_BLOCKS>>,
+    rank: &[u16],
+    scratch: &mut Scratch,
+) -> SectionScan {
+    let Some(data) = snapshot else {
+        return SectionScan::Absent;
+    };
+    match data {
+        Data::Single(atom) => SectionScan::Uniform(rank[*atom as usize]),
+        Data::Paletted(paletted) => {
+            let bytes = &paletted.packed_long_array[..];
+            let seen_mark = scratch.next_generation();
+            let seen = &mut *scratch.seen;
+            let distinct = &mut *scratch.distinct;
+            let mut distinct_len = 0usize;
+            let usable;
+            if paletted.palette.direct() {
+                usable = (bytes.len() / 2).min(SECTION_SIZE_BLOCKS);
+                for pair in bytes.chunks_exact(2).take(usable) {
+                    let atom = u16::from_le_bytes([pair[0], pair[1]]) as usize;
+                    if seen[atom] != seen_mark {
+                        seen[atom] = seen_mark;
+                        distinct[distinct_len] = rank[atom];
+                        distinct_len += 1;
+                    }
+                }
+            } else {
+                let bits = paletted.palette.bits_per_entry;
+                let (packed, cells) = usable_span(bits, bytes);
+                usable = cells;
+                extract_indices(bits, packed, &mut scratch.indices[..]);
+                let palette = &paletted.palette.palette;
+                for &index in scratch.indices[..usable].iter() {
+                    let atom = palette[index as usize] as usize;
+                    if seen[atom] != seen_mark {
+                        seen[atom] = seen_mark;
+                        distinct[distinct_len] = rank[atom];
+                        distinct_len += 1;
+                    }
+                }
+            }
+            if usable < SECTION_SIZE_BLOCKS && seen[0] != seen_mark {
+                seen[0] = seen_mark;
+                distinct[distinct_len] = rank[0];
+                distinct_len += 1;
+            }
+            if distinct_len == 1 {
+                return SectionScan::Uniform(distinct[0]);
+            }
+            distinct[..distinct_len].sort_unstable_by_key(|&a| rank[a as usize]);
+            SectionScan::Palette { distinct_len }
+        }
+    }
+}
+
+fn encode_grid(
+    mut voxels: Vec<u16>,
+    section_count: usize,
+    data: &RegionData,
+    ranked: &[u16],
+    rank: &[u16],
+    scratch: &mut Scratch,
+) -> Result<Vec<u8>, ModelError> {
     let mut side_streams = SideStreams {
         headers: Vec::new(),
         uniforms: Vec::new(),
@@ -421,21 +560,44 @@ fn encode_grid(mut voxels: Vec<u16>, section_count: usize) -> Result<Vec<u8>, Mo
     };
     let mut encoder = Encoder::default();
     let mut modeler = Modeler::new(voxels.len());
-    let mut scratch = Scratch::new();
 
     for section_y in 0..section_count {
         for segment_z in 0..SEGMENT_SIDE {
             for segment_x in 0..SEGMENT_SIDE {
                 let slot = segment_x * SEGMENT_SIDE + segment_z;
-                encode_section(
-                    &mut modeler,
-                    &mut encoder,
-                    &mut voxels,
-                    &rank,
-                    &mut scratch,
-                    SectionPos { slot, section_y },
-                    &mut side_streams,
-                )?;
+                let pos = SectionPos { slot, section_y };
+                let snapshot = data.segments[slot].as_ref().and_then(|segment| {
+                    segment.block_sections[section_y]
+                        .snapshots()
+                        .first()
+                        .map(|snapshot| &snapshot.data.data)
+                });
+                match scan_section(snapshot, rank, scratch) {
+                    SectionScan::Absent => {
+                        side_streams.headers.push(0);
+                        put_u16_le(&mut side_streams.uniforms, rank[0]);
+                    }
+                    SectionScan::Uniform(value) => {
+                        side_streams.headers.push(0);
+                        put_u16_le(&mut side_streams.uniforms, value);
+                    }
+                    SectionScan::Palette { distinct_len } => {
+                        let palette_bits = bit_depth(distinct_len);
+                        side_streams.headers.push(palette_bits as u8);
+                        put_u16_le(&mut side_streams.palettes, distinct_len as u16);
+                        let palette = &scratch.distinct[..distinct_len];
+                        for &atom in palette {
+                            put_u16_le(&mut side_streams.palettes, atom);
+                        }
+                        modeler.encode_section(
+                            &mut encoder,
+                            &mut voxels,
+                            pos,
+                            palette,
+                            palette_bits,
+                        )?;
+                    }
+                }
             }
         }
     }
@@ -445,7 +607,7 @@ fn encode_grid(mut voxels: Vec<u16>, section_count: usize) -> Result<Vec<u8>, Mo
     put_u64_le(&mut out, voxels.len() as u64);
     put_u8(&mut out, MODE);
     put_u32_le(&mut out, ranked.len() as u32);
-    for &atom in &ranked {
+    for &atom in ranked {
         put_u16_le(&mut out, atom);
     }
     put_u64_le(&mut out, side_streams.headers.len() as u64);
@@ -467,69 +629,49 @@ struct ResidualCtx<'a> {
     section_y: usize,
 }
 
-fn encode_section(
-    modeler: &mut Modeler,
-    encoder: &mut Encoder,
-    voxels: &mut [u16],
+fn build_grid(
+    data: &RegionData,
+    section_count: usize,
     rank: &[u16],
     scratch: &mut Scratch,
-    pos: SectionPos,
-    side_streams: &mut SideStreams,
-) -> Result<(), ModelError> {
-    let origin = pos.origin();
-    let hist = &mut *scratch.hist;
-    let distinct = &mut *scratch.distinct;
-    let mut distinct_len = 0usize;
-    for_each_section_cell(origin, |idx, _| {
-        let value = voxels[idx];
-        let counter = &mut hist[value as usize];
-        if *counter == 0 {
-            distinct[distinct_len] = value;
-            distinct_len += 1;
-        }
-        *counter += 1;
-    });
-    for i in 0..distinct_len {
-        hist[distinct[i] as usize] = 0;
-    }
-    if distinct_len == 1 {
-        side_streams.headers.push(0);
-        put_u16_le(&mut side_streams.uniforms, distinct[0]);
-        return Ok(());
-    }
-    distinct[..distinct_len].sort_unstable_by_key(|&a| rank[a as usize]);
-    let palette_bits = bit_depth(distinct_len);
-    side_streams.headers.push(palette_bits as u8);
-    put_u16_le(&mut side_streams.palettes, distinct_len as u16);
-    for &atom in &distinct[..distinct_len] {
-        put_u16_le(&mut side_streams.palettes, atom);
-    }
-    scratch.palette[..distinct_len].copy_from_slice(&distinct[..distinct_len]);
-    modeler.encode_section(
-        encoder,
-        voxels,
-        pos,
-        &scratch.palette[..distinct_len],
-        palette_bits,
-    )
-}
-
-fn build_grid(data: &RegionData, section_count: usize) -> Vec<u16> {
-    let mut voxels = vec![0u16; SIDE * SIDE * section_count * SECTION_SIDE];
+) -> Vec<u16> {
+    let mut voxels = vec![rank[0]; SIDE * SIDE * section_count * SECTION_SIDE];
     for slot in 0..SEGMENTS_PER_REGION {
         let Some(segment) = &data.segments[slot] else {
             continue;
         };
         for section_y in 0..section_count {
-            let snapshots = segment.block_sections[section_y].snapshots();
-            if snapshots.is_empty() {
+            let Some(snapshot) = segment.block_sections[section_y].snapshots().first() else {
                 continue;
+            };
+            let origin = section_origin(slot, section_y);
+            match &snapshot.data.data {
+                Data::Single(atom) => {
+                    fill_uniform(&mut voxels, origin, rank[*atom as usize]);
+                }
+                Data::Paletted(paletted) => {
+                    if paletted.palette.direct() {
+                        let values = snapshot.data.unpack();
+                        fill_section_mapped(&mut voxels, origin, &values, rank);
+                    } else {
+                        let bits = paletted.palette.bits_per_entry;
+                        let (packed, usable) = usable_span(bits, &paletted.packed_long_array[..]);
+                        let palette = &paletted.palette.palette;
+                        for (entry, &atom) in scratch.lut[..palette.len()].iter_mut().zip(palette.iter()) {
+                            *entry = rank[atom as usize];
+                        }
+                        extract_indices(bits, packed, &mut scratch.indices[..]);
+                        fill_section_lut(
+                            &mut voxels,
+                            origin,
+                            &scratch.indices[..],
+                            &scratch.lut,
+                            usable,
+                            rank[0],
+                        );
+                    }
+                }
             }
-            fill_section(
-                &mut voxels,
-                section_origin(slot, section_y),
-                &snapshots[0].data.unpack(),
-            );
         }
     }
     voxels
@@ -568,7 +710,7 @@ pub(crate) fn decode_grid(
 
     let mut decoder = Decoder::new(arithmetic);
     let mut modeler = Modeler::new(expected_voxels);
-    let mut palette_scratch = Scratch::new();
+    let mut palette_buf = Box::new([0u16; SECTION_SIZE_BLOCKS]);
     let mut voxels = vec![0u16; expected_voxels];
 
     for section_y in 0..section_count {
@@ -596,7 +738,7 @@ pub(crate) fn decode_grid(
                 }
                 let palette_len = palettes.read_u16()? as usize;
                 if palette_len < 2
-                    || palette_len > palette_scratch.palette.len()
+                    || palette_len > palette_buf.len()
                     || bit_depth(palette_len) != palette_bits
                 {
                     return Err(ModelError::PaletteInconsistent {
@@ -604,7 +746,7 @@ pub(crate) fn decode_grid(
                         bit_depth: palette_bits,
                     });
                 }
-                for entry in palette_scratch.palette[..palette_len].iter_mut() {
+                for entry in palette_buf[..palette_len].iter_mut() {
                     *entry = palettes.read_u16()?;
                     if *entry as usize >= remap_len {
                         return Err(ModelError::PaletteRankOutOfRange {
@@ -613,7 +755,7 @@ pub(crate) fn decode_grid(
                         });
                     }
                 }
-                let palette = &palette_scratch.palette[..palette_len];
+                let palette = &palette_buf[..palette_len];
                 modeler.decode_section(
                     &mut decoder,
                     &mut voxels,
@@ -630,7 +772,14 @@ pub(crate) fn decode_grid(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::serialize::experimental::models::spatial::{Y_STRIDE, Z_STRIDE};
+    use crate::dimension::DimensionType;
+    use crate::io::serialize::experimental::models::spatial::for_each_section_cell;
+    use crate::raw::SegmentData;
+    use crate::region::delta::PackedDeltaData;
+    use crate::region::packed_data::{PackedData, PackedSnapshot};
+    use crate::region::segment_info::{SegmentState, SegmentStateType};
+    use crate::region::tile_entities::DeltaTileEntityData;
+    use crate::version::Version;
 
     fn synthetic_grid(section_count: usize, seed: u64) -> Vec<u16> {
         let len = SIDE * SIDE * section_count * SECTION_SIDE;
@@ -662,13 +811,48 @@ mod tests {
         voxels
     }
 
+    fn region_data_from_grid(grid: &[u16], section_count: usize) -> RegionData {
+        let mut segments: [Option<SegmentData>; SEGMENTS_PER_REGION] =
+            std::array::from_fn(|_| None);
+        for slot in 0..SEGMENTS_PER_REGION {
+            let mut block_sections = Vec::with_capacity(section_count);
+            for section_y in 0..section_count {
+                let mut cells = [0u16; SECTION_SIZE_BLOCKS];
+                for_each_section_cell(section_origin(slot, section_y), |idx, i| {
+                    cells[i] = grid[idx];
+                });
+                block_sections.push(PackedDeltaData::new(vec![PackedSnapshot {
+                    data: PackedData::pack(&cells),
+                    timestamp: 0,
+                }]));
+            }
+            segments[slot] = Some(SegmentData {
+                block_sections,
+                biome_sections: (0..section_count).map(|_| PackedDeltaData::default()).collect(),
+                states: vec![SegmentState {
+                    state_type: SegmentStateType::New,
+                    timestamp: 0,
+                }],
+                tile_entities: DeltaTileEntityData::default(),
+            });
+        }
+        RegionData {
+            version: Version::default(),
+            protocol_version: 769,
+            dimension: DimensionType::Overworld,
+            segments,
+        }
+    }
+
     #[test]
     fn grid_roundtrip_synthetic() {
         let original = synthetic_grid(3, 0xABCDEF);
-        let payload = encode_grid(original.clone(), 3).unwrap();
-        let (mut decoded, ranked) = decode_grid(&PooledBytes::from_vec(payload), 3).unwrap();
+        let data = region_data_from_grid(&original, 3);
+        let payload = encode_region(&data, 3).unwrap();
+        let (mut decoded, ranked_out) =
+            decode_grid(&PooledBytes::from_vec(payload), 3).unwrap();
         for value in &mut decoded {
-            *value = ranked[*value as usize];
+            *value = ranked_out[*value as usize];
         }
 
         let pos = original
