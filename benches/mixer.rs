@@ -1,7 +1,6 @@
+mod fixtures;
+
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use std::fs;
-use std::path::{Path, PathBuf};
-use zvcr::{Reader, ReferenceReader};
 use zvcr::io::serialize::experimental::mixer;
 
 const COUNTER_TABLE_BITS: usize = 12;
@@ -15,60 +14,13 @@ const WEIGHT_ROWS: usize = TREE_ROWS * mixer::CONF_BUCKETS * 8;
 const PROB_HALF: u16 = mixer::PROB_HALF;
 const PROB_MAX: i32 = mixer::PROB_MAX;
 
-fn collect_region_files(dir: &Path, out: &mut Vec<(u64, PathBuf)>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_region_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "zvcr3d") {
-            let len = entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX);
-            out.push((len, path));
-        }
-    }
-}
-
-fn load_voxels() -> (PathBuf, Vec<u16>) {
-    if let Ok(path) = std::env::var("ZVCR_MIXER_BENCH_FILE") {
-        let path = PathBuf::from(path);
-        return voxels_from_file(&path).unwrap_or_else(|e| panic!("{e}"));
-    }
-    let mut candidates: Vec<(u64, PathBuf)> = Vec::new();
-    collect_region_files(Path::new("test_files"), &mut candidates);
-    assert!(!candidates.is_empty(), "no .zvcr3d files under test_files");
-    candidates.sort_unstable();
-    candidates
-        .iter()
-        .find_map(|(_, path)| voxels_from_file(path).ok())
-        .unwrap_or_else(|| panic!("no decodable .zvcr3d files under test_files"))
-}
-
-fn voxels_from_file(path: &Path) -> Result<(PathBuf, Vec<u16>), String> {
-    let bytes = fs::read(path)
-        .map_err(|e| format!("failed to read {path:?}: {e}"))?;
-    let data = ReferenceReader::new(0)
-        .from_bytes(&bytes)
-        .map_err(|e| format!("failed to decode {path:?}: {e}"))?;
-    let mut voxels = Vec::new();
-    for segment in &data.segments {
-        let Some(segment) = segment else {
-            continue;
-        };
-        for section in &segment.block_sections {
-            let snapshots = section.snapshots();
-            if snapshots.is_empty() {
-                continue;
-            }
-            voxels.extend_from_slice(&snapshots[0].data.unpack());
-        }
-    }
-    if voxels.is_empty() {
-        return Err(format!("no voxel data found in {path:?}"));
-    }
+fn load_voxels() -> (std::path::PathBuf, Vec<u16>) {
+    let path = fixtures::discover_region_file("ZVCR_MIXER_BENCH_FILE");
+    let data = fixtures::decode_region(&path).unwrap_or_else(|e| panic!("{e}"));
+    let mut voxels = fixtures::first_snapshot_voxels(&data);
+    assert!(!voxels.is_empty(), "no voxel data found in {path:?}");
     voxels.truncate(MAX_BENCH_VOXELS);
-    Ok((path.to_path_buf(), voxels))
+    (path, voxels)
 }
 
 fn counter_slot(value: u16, input: usize) -> usize {
