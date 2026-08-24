@@ -115,8 +115,8 @@ fn domain_levels<const UNPACKED_SIZE: usize>(
 
 fn finalize_palette(lut: &mut [u32; ATOM_COUNT]) -> Vec<u16> {
     let mut atoms = Vec::new();
-    for atom in 0..ATOM_COUNT {
-        if lut[atom] == 1 {
+    for (atom, &mark) in lut.iter().enumerate() {
+        if mark == 1 {
             atoms.push(atom as u16);
         }
     }
@@ -197,8 +197,8 @@ fn emit_from_indices(
         hist[value as usize] += 1;
     }
     let mut distinct_len = 0usize;
-    for source in 0..source_palette.len() {
-        if hist[source] != 0 {
+    for (source, &count) in hist.iter().enumerate().take(source_palette.len()) {
+        if count != 0 {
             distinct[distinct_len] = source as u8;
             distinct_len += 1;
         }

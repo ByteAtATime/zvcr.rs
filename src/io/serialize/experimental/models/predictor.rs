@@ -347,8 +347,8 @@ static KEY_LUT: [u32; 512] = build_key_lut();
 #[inline(always)]
 fn equality_mask(slice: &[u16; FIRST_ORDER], val: u16) -> u32 {
     let mut mask = 0u32;
-    for i in 0..8 {
-        mask |= ((slice[i] == val) as u32) << i;
+    for (i, &cell) in slice.iter().enumerate().take(8) {
+        mask |= ((cell == val) as u32) << i;
     }
     mask |= ((slice[8] == val) as u32) << 8;
     mask
@@ -833,9 +833,9 @@ mod tests {
         };
         let mut neighbors = [NONE; CHAIN_SLOTS];
         for _ in 0..100_000 {
-            for slot in 0..CHAIN_SLOTS {
+            for slot in neighbors.iter_mut() {
                 let pick = next() % 10;
-                neighbors[slot] = match pick {
+                *slot = match pick {
                     0 => NONE,
                     1..=2 => (next() % 9) as u16,
                     _ => (next() % 60_001) as u16,

@@ -10,8 +10,8 @@ pub(super) fn read_presence(
 ) -> Result<[bool; SEGMENTS_PER_REGION], ReadError> {
     let presence_bytes = cursor.read_bytes::<PRESENCE_BYTES>()?;
     let mut presence = [false; SEGMENTS_PER_REGION];
-    for slot in 0..SEGMENTS_PER_REGION {
-        presence[slot] = layout::presence_bit(&presence_bytes, slot);
+    for (slot, present) in presence.iter_mut().enumerate() {
+        *present = layout::presence_bit(&presence_bytes, slot);
     }
     Ok(presence)
 }
@@ -124,8 +124,8 @@ pub(super) fn read_states_by_segment(
     presence: &[bool; SEGMENTS_PER_REGION],
 ) -> Result<Vec<Vec<SegmentState>>, ReadError> {
     let mut states_by_segment = Vec::new();
-    for slot in 0..SEGMENTS_PER_REGION {
-        if !presence[slot] {
+    for &present in presence.iter() {
+        if !present {
             continue;
         }
         let state_count = cursor.read_u16()? as usize;

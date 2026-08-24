@@ -47,9 +47,9 @@ fn bench_decode(c: &mut Criterion) {
         let mut out = vec![0u8; SIZE];
         b.iter(|| {
             let mut dec = rans::RansDecoder::new(black_box(&body));
-            for i in 0..SIZE {
+            for out_byte in out.iter_mut() {
                 let e = unsafe { table.get_unchecked(dec.slot() as usize) };
-                out[i] = e.sym;
+                *out_byte = e.sym;
                 dec.advance(e.freq as u32, e.start as u32);
             }
             black_box(&out);

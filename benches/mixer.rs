@@ -47,11 +47,11 @@ fn bench_primary_mix(c: &mut Criterion, voxels: &[u16]) {
                 let row = (v as usize) % WEIGHT_ROWS;
                 let mixed = mixer::mix_stretched(&weights[row], &stretched);
                 let target = if bit != 0 { PROB_MAX } else { 0 };
-                for k in 0..mixer::MIX_INPUTS {
+                for (k, counter_row) in counters.iter_mut().enumerate() {
                     let slot = counter_slot(v, k);
-                    let current = counters[k][slot] as i32;
-                    counters[k][slot] = (current + ((target - current) >> mixer::HEAD_ADAPT_SHIFT))
-                        as u16;
+                    let current = counter_row[slot] as i32;
+                    counter_row[slot] =
+                        (current + ((target - current) >> mixer::HEAD_ADAPT_SHIFT)) as u16;
                 }
                 mixer::adapt_weights_stretched(&mut weights[row], &stretched, bit, mixed);
                 checksum = checksum.wrapping_add(mixed as u64);

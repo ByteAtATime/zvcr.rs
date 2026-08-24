@@ -121,8 +121,8 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
     let mut tail_cursor = ByteCursor::new(cursor.data.clone());
     tail_cursor.pos = packed.tail_start;
     let mut tile_entities_by_segment = Vec::new();
-    for slot in 0..SEGMENTS_PER_REGION {
-        if presence[slot] {
+    for &present in presence.iter() {
+        if present {
             tile_entities_by_segment.push(tile_entities::read(&mut tail_cursor)?);
         }
     }

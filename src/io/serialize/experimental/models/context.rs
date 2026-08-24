@@ -814,7 +814,7 @@ mod tests {
     fn region_data_from_grid(grid: &[u16], section_count: usize) -> RegionData {
         let mut segments: [Option<SegmentData>; SEGMENTS_PER_REGION] =
             std::array::from_fn(|_| None);
-        for slot in 0..SEGMENTS_PER_REGION {
+        for (slot, segment_slot) in segments.iter_mut().enumerate() {
             let mut block_sections = Vec::with_capacity(section_count);
             for section_y in 0..section_count {
                 let mut cells = [0u16; SECTION_SIZE_BLOCKS];
@@ -826,7 +826,7 @@ mod tests {
                     timestamp: 0,
                 }]));
             }
-            segments[slot] = Some(SegmentData {
+            *segment_slot = Some(SegmentData {
                 block_sections,
                 biome_sections: (0..section_count).map(|_| PackedDeltaData::default()).collect(),
                 states: vec![SegmentState {
