@@ -421,11 +421,23 @@ pub fn adapt_weights(weights: &mut [i32], probs: &[u32], bit: u32, mixed: u32) {
 
 #[inline]
 pub fn stretch_probs(probs: &[u32; MIX_INPUTS]) -> [i32; MIX_INPUTS] {
-    let mut stretched = [0i32; MIX_INPUTS];
-    for (stretched, &prob) in stretched.iter_mut().zip(probs) {
-        *stretched = unsafe { *STRETCH.get_unchecked(prob as usize) };
+    macro_rules! stretched {
+        ($i:literal) => {
+            unsafe { STRETCH.as_ptr().add(probs[$i] as usize).read_volatile() }
+        };
     }
-    stretched
+    [
+        stretched!(0),
+        stretched!(1),
+        stretched!(2),
+        stretched!(3),
+        stretched!(4),
+        stretched!(5),
+        stretched!(6),
+        stretched!(7),
+        stretched!(8),
+        stretched!(9),
+    ]
 }
 
 #[inline]
