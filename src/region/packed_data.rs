@@ -5,7 +5,7 @@ use crate::region::unpacked_view::UnpackedData;
 
 pub type LongArray = PooledBytes;
 
-fn vec_u64_to_bytes(v: Vec<u64>) -> PooledBytes {
+pub(crate) fn vec_u64_to_bytes(v: Vec<u64>) -> PooledBytes {
     let len = v.len() * 8;
     let capacity = v.capacity() * 8;
     let mut v = std::mem::ManuallyDrop::new(v);

@@ -677,10 +677,14 @@ fn build_grid(
     voxels
 }
 
+pub(crate) struct GridUniforms {
+    pub(crate) rank: Vec<Option<u16>>,
+}
+
 pub(crate) fn decode_grid(
     payload: &PooledBytes,
     section_count: usize,
-) -> Result<(Vec<u16>, Vec<u16>), ModelError> {
+) -> Result<(Vec<u16>, Vec<u16>, GridUniforms), ModelError> {
     let expected_voxels = SIDE * SIDE * section_count * SECTION_SIDE;
     let mut cursor = ByteCursor::new(payload.clone());
     let total_voxels = cursor.read_u64()? as usize;
@@ -712,6 +716,9 @@ pub(crate) fn decode_grid(
     let mut modeler = Modeler::new(expected_voxels);
     let mut palette_buf = Box::new([0u16; SECTION_SIZE_BLOCKS]);
     let mut voxels = vec![0u16; expected_voxels];
+    let mut grid_uniforms = GridUniforms {
+        rank: vec![None; SEGMENTS_PER_REGION * section_count],
+    };
 
     for section_y in 0..section_count {
         for segment_z in 0..SEGMENT_SIDE {
@@ -731,6 +738,7 @@ pub(crate) fn decode_grid(
                         SectionPos { slot, section_y }.origin(),
                         value as u16,
                     );
+                    grid_uniforms.rank[slot * section_count + section_y] = Some(value as u16);
                     continue;
                 }
                 if palette_bits > MAX_BIT_DEPTH {
@@ -766,7 +774,7 @@ pub(crate) fn decode_grid(
             }
         }
     }
-    Ok((voxels, ranked))
+    Ok((voxels, ranked, grid_uniforms))
 }
 
 #[cfg(test)]
@@ -849,7 +857,7 @@ mod tests {
         let original = synthetic_grid(3, 0xABCDEF);
         let data = region_data_from_grid(&original, 3);
         let payload = encode_region(&data, 3).unwrap();
-        let (mut decoded, ranked_out) =
+        let (mut decoded, ranked_out, _) =
             decode_grid(&PooledBytes::from_vec(payload), 3).unwrap();
         for value in &mut decoded {
             *value = ranked_out[*value as usize];
