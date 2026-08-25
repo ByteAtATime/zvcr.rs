@@ -13,8 +13,9 @@ pub const PROB_HALF: u16 = 2048;
 pub const MIX_INPUTS: usize = 10;
 pub const CONF_BUCKETS: usize = 8;
 pub const MISMATCH_BANDS: usize = 4;
+pub const TREE_INPUTS: usize = 4;
+pub const SURVIVOR_BANDS: usize = 6;
 pub(super) const POINTER_BANDS: usize = 4;
-pub const TREE_INPUTS: usize = 3;
 pub const MAX_BIT_DEPTH: usize = 16;
 
 const MIXER_UNIT: i32 = 1 << 16;
@@ -367,7 +368,7 @@ const SUFFIX_WEIGHTS: [u32; FIRST_ORDER + 1] = {
 };
 
 #[inline(always)]
-fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
+fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS], map: PaletteMap<'_>) -> (u16, u32) {
     let slice: &[u16; FIRST_ORDER] = neighbors[..FIRST_ORDER].try_into().unwrap();
     let mut best_val = NONE;
     let mut best_key = 0u32;
@@ -378,11 +379,9 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
             break;
         }
         let val = slice[i];
-        if val == NONE {
+        if val == NONE || !map.is_member(val) {
             continue;
         }
-
-        let val = slice[i];
         let mask = equality_mask(slice, val);
         let key = KEY_LUT[mask as usize];
         if key > best_key {
@@ -391,6 +390,28 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
             best_mask = mask;
             if mask == 0x1FF {
                 break;
+            }
+        }
+    }
+
+    if best_val == NONE {
+        for i in 0..FIRST_ORDER {
+            if (best_key >> 5) > SUFFIX_WEIGHTS[i] {
+                break;
+            }
+            let val = slice[i];
+            if val == NONE {
+                continue;
+            }
+            let mask = equality_mask(slice, val);
+            let key = KEY_LUT[mask as usize];
+            if key > best_key {
+                best_key = key;
+                best_val = val;
+                best_mask = mask;
+                if mask == 0x1FF {
+                    break;
+                }
             }
         }
     }
@@ -415,6 +436,19 @@ pub(super) fn mismatch_band(neighbors: &[u16; CHAIN_SLOTS], primary_value: u16) 
 pub(super) struct PrimaryCtx {
     pub(super) idx: [u32; MIX_INPUTS],
     pub(super) hash: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PaletteMap<'a> {
+    pub(super) stamp: u8,
+    pub(super) slot_gen: &'a [u8],
+}
+
+impl PaletteMap<'_> {
+    #[inline]
+    pub(super) fn is_member(&self, atom: u16) -> bool {
+        self.slot_gen[atom as usize] == self.stamp
+    }
 }
 
 #[inline]
@@ -490,14 +524,16 @@ pub(super) struct Predictor {
     pub(super) primary: Box<[[u16; PRIMARY_TABLE_SIZE]; MIX_INPUTS]>,
     pub(super) chain: Box<[[u16; CHAIN_TABLE_SIZE]; CHAIN_SLOTS]>,
     pub(super) chain_counts: Box<[[u8; CHAIN_TABLE_SIZE]; CHAIN_SLOTS]>,
+    pub(super) pointer: Box<[u16; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]>,
+    pub(super) pointer_counts: Box<[u8; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]>,
     pub(super) tree: Box<[[u16; PRIMARY_TABLE_SIZE]; 2]>,
     pub(super) tree_counts: Box<[[u8; PRIMARY_TABLE_SIZE]; 2]>,
     pub(super) tree_band: Box<[u16]>,
     pub(super) tree_band_counts: Box<[u8]>,
+    pub(super) tree_surv: Box<[u16; SURVIVOR_BANDS * MAX_BIT_DEPTH]>,
+    pub(super) tree_surv_counts: Box<[u8; SURVIVOR_BANDS * MAX_BIT_DEPTH]>,
     pub(super) weights:
         Box<[[i32; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * MISMATCH_BANDS * CONF_BUCKETS * 8]>,
-    pub(super) pointer: Box<[u16; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]>,
-    pub(super) pointer_counts: Box<[u8; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]>,
     pub(super) tree_weights: Box<[[i32; TREE_INPUTS]; MAX_BIT_DEPTH + 1]>,
     pub(super) run: u32,
 }
@@ -515,16 +551,18 @@ impl Predictor {
             primary: filled_tables::<u16, PRIMARY_TABLE_SIZE, MIX_INPUTS>(PROB_HALF),
             chain: filled_tables::<u16, CHAIN_TABLE_SIZE, CHAIN_SLOTS>(PROB_HALF),
             chain_counts: filled_tables::<u8, CHAIN_TABLE_SIZE, CHAIN_SLOTS>(0u8),
+            pointer: Box::new([PROB_HALF; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]),
+            pointer_counts: Box::new([0u8; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]),
             tree: filled_tables::<u16, PRIMARY_TABLE_SIZE, 2>(PROB_HALF),
             tree_counts: filled_tables::<u8, PRIMARY_TABLE_SIZE, 2>(0u8),
             tree_band: Box::new([PROB_HALF; TREE_BAND_TABLE_SIZE]),
             tree_band_counts: Box::new([0u8; TREE_BAND_TABLE_SIZE]),
+            tree_surv: Box::new([PROB_HALF; SURVIVOR_BANDS * MAX_BIT_DEPTH]),
+            tree_surv_counts: Box::new([0u8; SURVIVOR_BANDS * MAX_BIT_DEPTH]),
             weights: Box::new(
                 [[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS];
                     (MAX_BIT_DEPTH + 1) * MISMATCH_BANDS * CONF_BUCKETS * 8],
             ),
-            pointer: Box::new([PROB_HALF; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]),
-            pointer_counts: Box::new([0u8; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]),
             tree_weights: Box::new([[TREE_MIXER_SEED_WEIGHT; TREE_INPUTS]; MAX_BIT_DEPTH + 1]),
             run: 0,
         }
@@ -597,9 +635,10 @@ impl HeadState {
 }
 
 #[derive(Copy, Clone)]
-pub(super) struct SectionMetadata {
+pub(super) struct SectionMetadata<'a> {
     pub(super) section_y: usize,
     pub(super) palette_bits: usize,
+    pub(super) map: PaletteMap<'a>,
 }
 
 impl Predictor {
@@ -607,7 +646,7 @@ impl Predictor {
     pub(super) fn encode_head(
         &mut self,
         encoder: &mut Encoder,
-        section: SectionMetadata,
+        section: SectionMetadata<'_>,
         state: &mut HeadState,
         truth: u16,
         miss: &mut [u8],
@@ -625,7 +664,7 @@ impl Predictor {
             idx_ctx = memo.idx;
             idx_ctx[3] = (mask << 8) | self.run.min(255);
         } else {
-            let (pv, m) = select_primary_value(&state.neighbors);
+            let (pv, m) = select_primary_value(&state.neighbors, section.map);
             let ctx = primary_contexts(
                 &state.neighbors,
                 pv as u32,
@@ -646,6 +685,16 @@ impl Predictor {
             memo.idx = ctx.idx;
         }
         let bit = (truth == primary_value) as u32;
+        if bit == 0 && primary_value != NONE && !section.map.is_member(primary_value) {
+            self.run = 0;
+            unsafe { *miss.get_unchecked_mut(idx) = 1 };
+            return HeadLite {
+                primary_value,
+                mask,
+                hash,
+                bit,
+            };
+        }
         let ctx = idx_ctx;
         let mut probs = [0u32; MIX_INPUTS];
         for k in 0..MIX_INPUTS {
@@ -696,7 +745,7 @@ impl Predictor {
     pub(super) fn decode_head(
         &mut self,
         decoder: &mut Decoder,
-        section: SectionMetadata,
+        section: SectionMetadata<'_>,
         state: &mut HeadState,
         miss: &mut [u8],
         idx: usize,
@@ -713,7 +762,7 @@ impl Predictor {
             idx_ctx = memo.idx;
             idx_ctx[3] = (mask << 8) | self.run.min(255);
         } else {
-            let (pv, m) = select_primary_value(&state.neighbors);
+            let (pv, m) = select_primary_value(&state.neighbors, section.map);
             let ctx = primary_contexts(
                 &state.neighbors,
                 pv as u32,
@@ -732,6 +781,16 @@ impl Predictor {
             memo.mask = m;
             memo.hash = ctx.hash;
             memo.idx = ctx.idx;
+        }
+        if primary_value != NONE && !section.map.is_member(primary_value) {
+            self.run = 0;
+            unsafe { *miss.get_unchecked_mut(idx) = 1 };
+            return HeadLite {
+                primary_value,
+                mask,
+                hash,
+                bit: 0,
+            };
         }
         let ctx = idx_ctx;
         let mut probs = [0u32; MIX_INPUTS];

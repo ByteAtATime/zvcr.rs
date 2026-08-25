@@ -3,9 +3,9 @@ use crate::io::buffer::PooledBytes;
 use crate::io::serialize::experimental::models::error::ModelError;
 use crate::io::serialize::experimental::models::predictor::{
     CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, HeadState, MAX_BIT_DEPTH, NONE,
-    PRIMARY_TABLE_MASK, POINTER_BANDS, Predictor, SectionMetadata, TREE_BAND_TABLE_MASK,
-    ADAPT_RATE_SHIFT, adapt, adapt_weights, combine, gather_neighbors, gather_neighbors_fast,
-    mix_logits,
+    PRIMARY_TABLE_MASK, POINTER_BANDS, PaletteMap, Predictor, SectionMetadata,
+    TREE_BAND_TABLE_MASK, ADAPT_RATE_SHIFT, adapt, adapt_weights, combine, gather_neighbors,
+    gather_neighbors_fast, mix_logits,
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
@@ -29,6 +29,7 @@ fn bit_depth(distinct_len: usize) -> usize {
 struct ChainScratch {
     candidates: [u16; CHAIN_SLOTS],
     slots: [u8; CHAIN_SLOTS],
+    member: [u16; CHAIN_SLOTS],
 }
 
 impl ChainScratch {
@@ -36,6 +37,7 @@ impl ChainScratch {
         Self {
             candidates: [NONE; CHAIN_SLOTS],
             slots: [0; CHAIN_SLOTS],
+            member: [0; CHAIN_SLOTS],
         }
     }
 }
@@ -44,6 +46,9 @@ struct Modeler {
     predictor: Predictor,
     inverse: Box<[u16]>,
     miss: Vec<u8>,
+    slot_gen: Box<[u8]>,
+    slots: Box<[u16]>,
+    epoch: u8,
 }
 
 impl Modeler {
@@ -52,6 +57,34 @@ impl Modeler {
             predictor: Predictor::new(),
             inverse: vec![0u16; ATOM_COUNT].into_boxed_slice(),
             miss: vec![0u8; len],
+            slot_gen: vec![0u8; ATOM_COUNT].into_boxed_slice(),
+            slots: vec![0u16; ATOM_COUNT].into_boxed_slice(),
+            epoch: 0,
+        }
+    }
+
+    fn next_generation(&mut self) -> u8 {
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.slot_gen.fill(0);
+            self.epoch = 1;
+        }
+        self.epoch
+    }
+
+    fn mark_palette(&mut self, palette: &[u16]) {
+        let stamp = self.next_generation();
+        for (i, &atom) in palette.iter().enumerate() {
+            self.slot_gen[atom as usize] = stamp;
+            self.slots[atom as usize] = i as u16;
+        }
+    }
+
+    fn slot_of(&self, atom: u16) -> Option<u16> {
+        if self.slot_gen[atom as usize] == self.epoch {
+            Some(self.slots[atom as usize])
+        } else {
+            None
         }
     }
 
@@ -66,13 +99,10 @@ impl Modeler {
         for (i, &atom) in palette.iter().enumerate() {
             self.inverse[atom as usize] = i as u16;
         }
+        self.mark_palette(palette);
         let (origin_x, origin_z, origin_y) = pos.origin();
         let mut chain = ChainScratch::new();
         let mut state = HeadState::new();
-        let section = SectionMetadata {
-            section_y: pos.section_y,
-            palette_bits,
-        };
         for local_y in 0..SECTION_SIDE {
             let y = origin_y + local_y;
             for local_z in 0..SECTION_SIDE {
@@ -91,6 +121,14 @@ impl Modeler {
                         gather_neighbors(voxels, idx, x, y, z, &mut state.neighbors);
                     }
                     let truth = voxels[idx];
+                    let section = SectionMetadata {
+                        section_y: pos.section_y,
+                        palette_bits,
+                        map: PaletteMap {
+                            stamp: self.epoch,
+                            slot_gen: &self.slot_gen,
+                        },
+                    };
                     let head = self.predictor.encode_head(
                         encoder,
                         section,
@@ -127,13 +165,13 @@ impl Modeler {
         palette: &[u16],
         palette_bits: usize,
     ) -> Result<(), ModelError> {
+        for (i, &atom) in palette.iter().enumerate() {
+            self.inverse[atom as usize] = i as u16;
+        }
+        self.mark_palette(palette);
         let (origin_x, origin_z, origin_y) = pos.origin();
         let mut chain = ChainScratch::new();
         let mut state = HeadState::new();
-        let section = SectionMetadata {
-            section_y: pos.section_y,
-            palette_bits,
-        };
         for local_y in 0..SECTION_SIDE {
             let y = origin_y + local_y;
             for local_z in 0..SECTION_SIDE {
@@ -151,6 +189,14 @@ impl Modeler {
                     } else {
                         gather_neighbors(voxels, idx, x, y, z, &mut state.neighbors);
                     }
+                    let section = SectionMetadata {
+                        section_y: pos.section_y,
+                        palette_bits,
+                        map: PaletteMap {
+                            stamp: self.epoch,
+                            slot_gen: &self.slot_gen,
+                        },
+                    };
                     let head = self.predictor.decode_head(
                         decoder,
                         section,
@@ -195,8 +241,12 @@ impl Modeler {
             if ctx.chain.candidates[..candidate_count].contains(&candidate) {
                 continue;
             }
+            let Some(member) = self.slot_of(candidate) else {
+                continue;
+            };
             ctx.chain.candidates[candidate_count] = candidate;
             ctx.chain.slots[candidate_count] = slot as u8;
+            ctx.chain.member[candidate_count] = member;
             candidate_count += 1;
         }
         if candidate_count == 1 {
@@ -243,13 +293,28 @@ impl Modeler {
                 }
             }
         }
+        let mut excluded = [0u16; CHAIN_SLOTS + 1];
+        let mut excluded_len = 0usize;
+        if ctx.head.primary_value != NONE
+            && let Some(slot) = self.slot_of(ctx.head.primary_value)
+        {
+            excluded[excluded_len] = slot;
+            excluded_len += 1;
+        }
+        for &member in ctx.chain.member[..candidate_count].iter() {
+            excluded[excluded_len] = member;
+            excluded_len += 1;
+        }
         self.encode_tree(
             encoder,
             truth,
-            ctx.head.hash,
-            ctx.palette,
-            ctx.palette_bits,
-            ctx.section_y,
+            TreeParams {
+                hash: ctx.head.hash,
+                palette: ctx.palette,
+                palette_bits: ctx.palette_bits,
+                section_y: ctx.section_y,
+                excluded: &excluded[..excluded_len],
+            },
         )
     }
 
@@ -267,8 +332,12 @@ impl Modeler {
             if ctx.chain.candidates[..candidate_count].contains(&candidate) {
                 continue;
             }
+            let Some(member) = self.slot_of(candidate) else {
+                continue;
+            };
             ctx.chain.candidates[candidate_count] = candidate;
             ctx.chain.slots[candidate_count] = slot as u8;
+            ctx.chain.member[candidate_count] = member;
             candidate_count += 1;
         }
         if candidate_count == 1 {
@@ -313,12 +382,27 @@ impl Modeler {
                 }
             }
         }
+        let mut excluded = [0u16; CHAIN_SLOTS + 1];
+        let mut excluded_len = 0usize;
+        if ctx.head.primary_value != NONE
+            && let Some(slot) = self.slot_of(ctx.head.primary_value)
+        {
+            excluded[excluded_len] = slot;
+            excluded_len += 1;
+        }
+        for &member in ctx.chain.member[..candidate_count].iter() {
+            excluded[excluded_len] = member;
+            excluded_len += 1;
+        }
         self.decode_tree(
             decoder,
-            ctx.head.hash,
-            ctx.palette,
-            ctx.palette_bits,
-            ctx.section_y,
+            TreeParams {
+                hash: ctx.head.hash,
+                palette: ctx.palette,
+                palette_bits: ctx.palette_bits,
+                section_y: ctx.section_y,
+                excluded: &excluded[..excluded_len],
+            },
         )
     }
 
@@ -326,25 +410,55 @@ impl Modeler {
         &mut self,
         encoder: &mut Encoder,
         truth: u16,
-        hash: u32,
-        palette: &[u16],
-        palette_bits: usize,
-        section_y: usize,
+        params: TreeParams<'_>,
     ) -> Result<u16, ModelError> {
         let truth_index = self.inverse[truth as usize] as usize;
+        let palette_len = params.palette.len();
         let mut partial = 0usize;
-        for bit_pos in (0..palette_bits).rev() {
+        for bit_pos in (0..params.palette_bits).rev() {
             let node = partial | (1 << bit_pos);
-            let spatial_tree_ctx = (combine(hash, node as u32) & PRIMARY_TABLE_MASK) as usize;
+            let hi = (partial + (1 << (bit_pos + 1))).min(palette_len);
+            let split = node.min(hi);
+            let mut upper = hi - split;
+            let mut lower = split - partial;
+            for &slot in params.excluded {
+                let slot = usize::from(slot);
+                if slot >= partial && slot < hi {
+                    if slot >= node {
+                        upper -= 1;
+                    } else {
+                        lower -= 1;
+                    }
+                }
+            }
+            if upper == 0 {
+                continue;
+            }
+            if lower == 0 {
+                partial = node;
+                continue;
+            }
+            let balance = lower.min(upper);
+            let band = match balance {
+                1 => 0,
+                2 => 1,
+                3..=4 => 2,
+                5..=8 => 3,
+                9..=16 => 4,
+                _ => 5,
+            };
+            let survivor_ctx = band * MAX_BIT_DEPTH + bit_pos;
+            let spatial_tree_ctx = (combine(params.hash, node as u32) & PRIMARY_TABLE_MASK) as usize;
             let bitpos_tree_ctx = node | (bit_pos << 13);
             let height_tree_ctx =
-                (combine(section_y as u32, node as u32) & TREE_BAND_TABLE_MASK) as usize;
+                (combine(params.section_y as u32, node as u32) & TREE_BAND_TABLE_MASK) as usize;
             let probs = [
                 self.predictor.tree[0][spatial_tree_ctx] as u32,
                 self.predictor.tree[1][bitpos_tree_ctx] as u32,
                 self.predictor.tree_band[height_tree_ctx] as u32,
+                self.predictor.tree_surv[survivor_ctx] as u32,
             ];
-            let mixed = mix_logits(&self.predictor.tree_weights[palette_bits], &probs);
+            let mixed = mix_logits(&self.predictor.tree_weights[params.palette_bits], &probs);
             let bit = ((truth_index >> bit_pos) & 1) as u32;
             encoder.encode(mixed, bit);
             adapt(
@@ -365,44 +479,81 @@ impl Modeler {
                 bit,
                 ADAPT_RATE_SHIFT,
             );
+            adapt(
+                &mut self.predictor.tree_surv[survivor_ctx],
+                &mut self.predictor.tree_surv_counts[survivor_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
             adapt_weights(
-                &mut self.predictor.tree_weights[palette_bits],
+                &mut self.predictor.tree_weights[params.palette_bits],
                 &probs,
                 bit,
                 mixed,
             );
             partial |= (bit as usize) << bit_pos;
         }
-        palette
+        params
+            .palette
             .get(partial)
             .copied()
             .ok_or(ModelError::PaletteIndexOutOfRange {
                 index: partial,
-                len: palette.len(),
+                len: params.palette.len(),
             })
     }
 
     fn decode_tree(
         &mut self,
         decoder: &mut Decoder,
-        hash: u32,
-        palette: &[u16],
-        palette_bits: usize,
-        section_y: usize,
+        params: TreeParams<'_>,
     ) -> Result<u16, ModelError> {
+        let palette_len = params.palette.len();
         let mut partial = 0usize;
-        for bit_pos in (0..palette_bits).rev() {
+        for bit_pos in (0..params.palette_bits).rev() {
             let node = partial | (1 << bit_pos);
-            let spatial_tree_ctx = (combine(hash, node as u32) & PRIMARY_TABLE_MASK) as usize;
+            let hi = (partial + (1 << (bit_pos + 1))).min(palette_len);
+            let split = node.min(hi);
+            let mut upper = hi - split;
+            let mut lower = split - partial;
+            for &slot in params.excluded {
+                let slot = usize::from(slot);
+                if slot >= partial && slot < hi {
+                    if slot >= node {
+                        upper -= 1;
+                    } else {
+                        lower -= 1;
+                    }
+                }
+            }
+            if upper == 0 {
+                continue;
+            }
+            if lower == 0 {
+                partial = node;
+                continue;
+            }
+            let balance = lower.min(upper);
+            let band = match balance {
+                1 => 0,
+                2 => 1,
+                3..=4 => 2,
+                5..=8 => 3,
+                9..=16 => 4,
+                _ => 5,
+            };
+            let survivor_ctx = band * MAX_BIT_DEPTH + bit_pos;
+            let spatial_tree_ctx = (combine(params.hash, node as u32) & PRIMARY_TABLE_MASK) as usize;
             let bitpos_tree_ctx = node | (bit_pos << 13);
             let height_tree_ctx =
-                (combine(section_y as u32, node as u32) & TREE_BAND_TABLE_MASK) as usize;
+                (combine(params.section_y as u32, node as u32) & TREE_BAND_TABLE_MASK) as usize;
             let probs = [
                 self.predictor.tree[0][spatial_tree_ctx] as u32,
                 self.predictor.tree[1][bitpos_tree_ctx] as u32,
                 self.predictor.tree_band[height_tree_ctx] as u32,
+                self.predictor.tree_surv[survivor_ctx] as u32,
             ];
-            let mixed = mix_logits(&self.predictor.tree_weights[palette_bits], &probs);
+            let mixed = mix_logits(&self.predictor.tree_weights[params.palette_bits], &probs);
             let bit = decoder.decode(mixed);
             adapt(
                 &mut self.predictor.tree[0][spatial_tree_ctx],
@@ -422,22 +573,37 @@ impl Modeler {
                 bit,
                 ADAPT_RATE_SHIFT,
             );
+            adapt(
+                &mut self.predictor.tree_surv[survivor_ctx],
+                &mut self.predictor.tree_surv_counts[survivor_ctx],
+                bit,
+                ADAPT_RATE_SHIFT,
+            );
             adapt_weights(
-                &mut self.predictor.tree_weights[palette_bits],
+                &mut self.predictor.tree_weights[params.palette_bits],
                 &probs,
                 bit,
                 mixed,
             );
             partial |= (bit as usize) << bit_pos;
         }
-        palette
+        params
+            .palette
             .get(partial)
             .copied()
             .ok_or(ModelError::PaletteIndexOutOfRange {
                 index: partial,
-                len: palette.len(),
+                len: params.palette.len(),
             })
     }
+}
+
+struct TreeParams<'a> {
+    hash: u32,
+    palette: &'a [u16],
+    palette_bits: usize,
+    section_y: usize,
+    excluded: &'a [u16],
 }
 
 struct Scratch {
