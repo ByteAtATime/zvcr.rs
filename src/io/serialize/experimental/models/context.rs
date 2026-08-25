@@ -3,8 +3,9 @@ use crate::io::buffer::PooledBytes;
 use crate::io::serialize::experimental::models::error::ModelError;
 use crate::io::serialize::experimental::models::predictor::{
     CHAIN_ORDER, CHAIN_SLOTS, CHAIN_TABLE_MASK, HeadLite, HeadState, MAX_BIT_DEPTH, NONE,
-    PRIMARY_TABLE_MASK, Predictor, SectionMetadata, TREE_BAND_TABLE_MASK, ADAPT_RATE_SHIFT, adapt,
-    adapt_weights, combine, gather_neighbors, gather_neighbors_fast, mix_logits,
+    PRIMARY_TABLE_MASK, POINTER_BANDS, Predictor, SectionMetadata, TREE_BAND_TABLE_MASK,
+    ADAPT_RATE_SHIFT, adapt, adapt_weights, combine, gather_neighbors, gather_neighbors_fast,
+    mix_logits,
 };
 use crate::io::serialize::experimental::models::range::{Decoder, Encoder};
 use crate::io::serialize::experimental::models::spatial::{
@@ -23,6 +24,20 @@ const MODE: u8 = 1;
 
 fn bit_depth(distinct_len: usize) -> usize {
     (usize::BITS - (distinct_len - 1).leading_zeros()) as usize
+}
+
+struct ChainScratch {
+    candidates: [u16; CHAIN_SLOTS],
+    slots: [u8; CHAIN_SLOTS],
+}
+
+impl ChainScratch {
+    fn new() -> Self {
+        Self {
+            candidates: [NONE; CHAIN_SLOTS],
+            slots: [0; CHAIN_SLOTS],
+        }
+    }
 }
 
 struct Modeler {
@@ -52,7 +67,7 @@ impl Modeler {
             self.inverse[atom as usize] = i as u16;
         }
         let (origin_x, origin_z, origin_y) = pos.origin();
-        let mut candidates = [NONE; CHAIN_SLOTS];
+        let mut chain = ChainScratch::new();
         let mut state = HeadState::new();
         let section = SectionMetadata {
             section_y: pos.section_y,
@@ -91,7 +106,7 @@ impl Modeler {
                             ResidualCtx {
                                 neighbors: &state.neighbors,
                                 head: &head,
-                                candidates: &mut candidates,
+                                chain: &mut chain,
                                 palette,
                                 palette_bits,
                                 section_y: pos.section_y,
@@ -113,7 +128,7 @@ impl Modeler {
         palette_bits: usize,
     ) -> Result<(), ModelError> {
         let (origin_x, origin_z, origin_y) = pos.origin();
-        let mut candidates = [NONE; CHAIN_SLOTS];
+        let mut chain = ChainScratch::new();
         let mut state = HeadState::new();
         let section = SectionMetadata {
             section_y: pos.section_y,
@@ -151,7 +166,7 @@ impl Modeler {
                             ResidualCtx {
                                 neighbors: &state.neighbors,
                                 head: &head,
-                                candidates: &mut candidates,
+                                chain: &mut chain,
                                 palette,
                                 palette_bits,
                                 section_y: pos.section_y,
@@ -177,27 +192,56 @@ impl Modeler {
             if candidate == NONE || candidate == ctx.head.primary_value {
                 continue;
             }
-            if ctx.candidates[..candidate_count].contains(&candidate) {
+            if ctx.chain.candidates[..candidate_count].contains(&candidate) {
                 continue;
             }
-            ctx.candidates[candidate_count] = candidate;
-            let chain_ctx = (combine(
-                candidate as u32,
-                candidate_count as u32 | (ctx.head.mask << 8),
-            ) & CHAIN_TABLE_MASK) as usize;
-            let prob = self.predictor.chain[slot][chain_ctx] as u32;
+            ctx.chain.candidates[candidate_count] = candidate;
+            ctx.chain.slots[candidate_count] = slot as u8;
+            candidate_count += 1;
+        }
+        if candidate_count == 1 {
+            let candidate = ctx.chain.candidates[0];
+            let slot = ctx.chain.slots[0] as usize;
+            let pointer_band = match slot {
+                0..=2 => 0,
+                3..=6 => 1,
+                7..=8 => 2,
+                _ => 3,
+            };
+            let pointer_ctx = ctx.palette_bits * POINTER_BANDS + pointer_band;
+            let prob = self.predictor.pointer[pointer_ctx] as u32;
             let bit = (truth == candidate) as u32;
             encoder.encode(prob, bit);
             adapt(
-                &mut self.predictor.chain[slot][chain_ctx],
-                &mut self.predictor.chain_counts[slot][chain_ctx],
+                &mut self.predictor.pointer[pointer_ctx],
+                &mut self.predictor.pointer_counts[pointer_ctx],
                 bit,
                 ADAPT_RATE_SHIFT,
             );
             if bit != 0 {
                 return Ok(candidate);
             }
-            candidate_count += 1;
+        } else {
+            for entry in 0..candidate_count {
+                let candidate = ctx.chain.candidates[entry];
+                let slot = ctx.chain.slots[entry] as usize;
+                let chain_ctx = (combine(
+                    candidate as u32,
+                    entry as u32 | (ctx.head.mask << 8),
+                ) & CHAIN_TABLE_MASK) as usize;
+                let prob = self.predictor.chain[slot][chain_ctx] as u32;
+                let bit = (truth == candidate) as u32;
+                encoder.encode(prob, bit);
+                adapt(
+                    &mut self.predictor.chain[slot][chain_ctx],
+                    &mut self.predictor.chain_counts[slot][chain_ctx],
+                    bit,
+                    ADAPT_RATE_SHIFT,
+                );
+                if bit != 0 {
+                    return Ok(candidate);
+                }
+            }
         }
         self.encode_tree(
             encoder,
@@ -220,26 +264,54 @@ impl Modeler {
             if candidate == NONE || candidate == ctx.head.primary_value {
                 continue;
             }
-            if ctx.candidates[..candidate_count].contains(&candidate) {
+            if ctx.chain.candidates[..candidate_count].contains(&candidate) {
                 continue;
             }
-            ctx.candidates[candidate_count] = candidate;
-            let chain_ctx = (combine(
-                candidate as u32,
-                candidate_count as u32 | (ctx.head.mask << 8),
-            ) & CHAIN_TABLE_MASK) as usize;
-            let prob = self.predictor.chain[slot][chain_ctx] as u32;
+            ctx.chain.candidates[candidate_count] = candidate;
+            ctx.chain.slots[candidate_count] = slot as u8;
+            candidate_count += 1;
+        }
+        if candidate_count == 1 {
+            let candidate = ctx.chain.candidates[0];
+            let slot = ctx.chain.slots[0] as usize;
+            let pointer_band = match slot {
+                0..=2 => 0,
+                3..=6 => 1,
+                7..=8 => 2,
+                _ => 3,
+            };
+            let pointer_ctx = ctx.palette_bits * POINTER_BANDS + pointer_band;
+            let prob = self.predictor.pointer[pointer_ctx] as u32;
             let bit = decoder.decode(prob);
             adapt(
-                &mut self.predictor.chain[slot][chain_ctx],
-                &mut self.predictor.chain_counts[slot][chain_ctx],
+                &mut self.predictor.pointer[pointer_ctx],
+                &mut self.predictor.pointer_counts[pointer_ctx],
                 bit,
                 ADAPT_RATE_SHIFT,
             );
             if bit != 0 {
                 return Ok(candidate);
             }
-            candidate_count += 1;
+        } else {
+            for entry in 0..candidate_count {
+                let candidate = ctx.chain.candidates[entry];
+                let slot = ctx.chain.slots[entry] as usize;
+                let chain_ctx = (combine(
+                    candidate as u32,
+                    entry as u32 | (ctx.head.mask << 8),
+                ) & CHAIN_TABLE_MASK) as usize;
+                let prob = self.predictor.chain[slot][chain_ctx] as u32;
+                let bit = decoder.decode(prob);
+                adapt(
+                    &mut self.predictor.chain[slot][chain_ctx],
+                    &mut self.predictor.chain_counts[slot][chain_ctx],
+                    bit,
+                    ADAPT_RATE_SHIFT,
+                );
+                if bit != 0 {
+                    return Ok(candidate);
+                }
+            }
         }
         self.decode_tree(
             decoder,
@@ -623,7 +695,7 @@ fn encode_grid(
 struct ResidualCtx<'a> {
     neighbors: &'a [u16; CHAIN_SLOTS],
     head: &'a HeadLite,
-    candidates: &'a mut [u16; CHAIN_SLOTS],
+    chain: &'a mut ChainScratch,
     palette: &'a [u16],
     palette_bits: usize,
     section_y: usize,

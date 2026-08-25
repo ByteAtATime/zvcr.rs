@@ -12,6 +12,8 @@ pub const PROB_HALF: u16 = 2048;
 
 pub const MIX_INPUTS: usize = 10;
 pub const CONF_BUCKETS: usize = 8;
+pub const MISMATCH_BANDS: usize = 4;
+pub(super) const POINTER_BANDS: usize = 4;
 pub const TREE_INPUTS: usize = 3;
 pub const MAX_BIT_DEPTH: usize = 16;
 
@@ -396,6 +398,20 @@ fn select_primary_value(neighbors: &[u16; CHAIN_SLOTS]) -> (u16, u32) {
     (best_val, best_mask)
 }
 
+#[inline(always)]
+pub(super) fn mismatch_band(neighbors: &[u16; CHAIN_SLOTS], primary_value: u16) -> usize {
+    let mut mismatch = 0usize;
+    for &cell in &neighbors[..FIRST_ORDER] {
+        mismatch += (cell != NONE && cell != primary_value) as usize;
+    }
+    match mismatch {
+        0 => 0,
+        1 => 1,
+        2..=3 => 2,
+        _ => 3,
+    }
+}
+
 pub(super) struct PrimaryCtx {
     pub(super) idx: [u32; MIX_INPUTS],
     pub(super) hash: u32,
@@ -478,7 +494,10 @@ pub(super) struct Predictor {
     pub(super) tree_counts: Box<[[u8; PRIMARY_TABLE_SIZE]; 2]>,
     pub(super) tree_band: Box<[u16]>,
     pub(super) tree_band_counts: Box<[u8]>,
-    pub(super) weights: Box<[[i32; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8]>,
+    pub(super) weights:
+        Box<[[i32; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * MISMATCH_BANDS * CONF_BUCKETS * 8]>,
+    pub(super) pointer: Box<[u16; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]>,
+    pub(super) pointer_counts: Box<[u8; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]>,
     pub(super) tree_weights: Box<[[i32; TREE_INPUTS]; MAX_BIT_DEPTH + 1]>,
     pub(super) run: u32,
 }
@@ -501,8 +520,11 @@ impl Predictor {
             tree_band: Box::new([PROB_HALF; TREE_BAND_TABLE_SIZE]),
             tree_band_counts: Box::new([0u8; TREE_BAND_TABLE_SIZE]),
             weights: Box::new(
-                [[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS]; (MAX_BIT_DEPTH + 1) * CONF_BUCKETS * 8],
+                [[PRIMARY_MIXER_SEED_WEIGHT; MIX_INPUTS];
+                    (MAX_BIT_DEPTH + 1) * MISMATCH_BANDS * CONF_BUCKETS * 8],
             ),
+            pointer: Box::new([PROB_HALF; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]),
+            pointer_counts: Box::new([0u8; (MAX_BIT_DEPTH + 1) * POINTER_BANDS]),
             tree_weights: Box::new([[TREE_MIXER_SEED_WEIGHT; TREE_INPUTS]; MAX_BIT_DEPTH + 1]),
             run: 0,
         }
@@ -644,7 +666,11 @@ impl Predictor {
         }
         let cluster = cluster_of(&state.neighbors, miss, idx);
         let conf = (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
-        let weight_row = palette_bits * CONF_BUCKETS * 8 + conf * 8 + cluster as usize;
+        let band = mismatch_band(&state.neighbors, primary_value);
+        let weight_row = palette_bits * MISMATCH_BANDS * CONF_BUCKETS * 8
+            + band * CONF_BUCKETS * 8
+            + conf * 8
+            + cluster as usize;
         let mixed = mix_stretched(
             unsafe { self.weights.get_unchecked(weight_row) },
             &stretched,
@@ -716,7 +742,11 @@ impl Predictor {
         let stretched = stretch_probs(&probs);
         let cluster = cluster_of(&state.neighbors, miss, idx);
         let conf = (WEIGHT_LUT[mask as usize] / 3).min(CONF_BUCKETS as u32 - 1) as usize;
-        let weight_row = palette_bits * CONF_BUCKETS * 8 + conf * 8 + cluster as usize;
+        let band = mismatch_band(&state.neighbors, primary_value);
+        let weight_row = palette_bits * MISMATCH_BANDS * CONF_BUCKETS * 8
+            + band * CONF_BUCKETS * 8
+            + conf * 8
+            + cluster as usize;
         let mixed = mix_stretched(
             unsafe { self.weights.get_unchecked(weight_row) },
             &stretched,
