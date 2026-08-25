@@ -783,7 +783,6 @@ mod tests {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn reference_primary_contexts(
         neighbors: &[u16; CHAIN_SLOTS],
         primary_value: u32,

@@ -2,6 +2,7 @@ mod fixtures;
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use zvcr::io::serialize::experimental::mixer;
+use zvcr::raw::RegionData;
 
 const COUNTER_TABLE_BITS: usize = 12;
 const COUNTER_TABLE_SIZE: usize = 1 << COUNTER_TABLE_BITS;
@@ -14,10 +15,23 @@ const WEIGHT_ROWS: usize = TREE_ROWS * mixer::CONF_BUCKETS * 8;
 const PROB_HALF: u16 = mixer::PROB_HALF;
 const PROB_MAX: i32 = mixer::PROB_MAX;
 
+fn first_snapshot_voxels(data: &RegionData) -> Vec<u16> {
+    let mut voxels = Vec::new();
+    for segment in data.segments.iter().flatten() {
+        for section in &segment.block_sections {
+            let snapshots = section.snapshots();
+            if let Some(first) = snapshots.first() {
+                voxels.extend_from_slice(&first.data.unpack());
+            }
+        }
+    }
+    voxels
+}
+
 fn load_voxels() -> (std::path::PathBuf, Vec<u16>) {
     let path = fixtures::discover_region_file("ZVCR_MIXER_BENCH_FILE");
     let data = fixtures::decode_region(&path).unwrap_or_else(|e| panic!("{e}"));
-    let mut voxels = fixtures::first_snapshot_voxels(&data);
+    let mut voxels = first_snapshot_voxels(&data);
     assert!(!voxels.is_empty(), "no voxel data found in {path:?}");
     voxels.truncate(MAX_BENCH_VOXELS);
     (path, voxels)

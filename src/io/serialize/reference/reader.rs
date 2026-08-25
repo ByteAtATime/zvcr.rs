@@ -1,9 +1,5 @@
-use super::File;
 use crate::definitions::*;
-use crate::dimension::DimensionType;
 use crate::io::buffer::PooledBytes;
-use crate::io::compression::decompress_zstd;
-use crate::io::file_location::{EXTENSION, RegionLocation};
 use crate::io::serialize::context::Context;
 use crate::io::serialize::error::*;
 use crate::io::serialize::primitives::ByteCursor;
@@ -11,13 +7,9 @@ use crate::raw::{RegionData, SegmentData};
 use crate::region::delta::PackedDeltaData;
 use crate::region::packed_data::{Data, PackedData, PackedSnapshot, PalettedData};
 use crate::region::palette::{DIRECT_PALETTE, MAX_INDIRECT_PALETTE_SIZE, Palette, bits_per_entry};
-use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
-use crate::version::*;
-use std::fs;
 use std::ops::{Deref, DerefMut, Range};
-use std::path::Path;
 use std::sync::Arc;
 
 pub(crate) type SectionGroup<const N: usize> = (
@@ -51,36 +43,6 @@ impl ReadHandle {
             cursor: ByteCursor::new(data),
             max_deltas,
         }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn offset(&self) -> usize {
-        self.pos
-    }
-
-    pub(crate) fn validate_file_prefix(&mut self, prefix: &str) -> Result<(), ReadError> {
-        let mut buf = vec![0u8; prefix.len()];
-        self.read_exact(&mut buf)?;
-        if buf != prefix.as_bytes() {
-            return Err(ReadError::HeaderMismatch);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn deserialize_version(&mut self, latest: Version) -> Result<Version, ReadError> {
-        let ver_num = self.read_u8()?;
-        if ver_num > latest as u8 {
-            return Err(ReadError::InvalidVersion(ver_num));
-        }
-        Version::from_u8(ver_num).ok_or(ReadError::InvalidVersion(ver_num))
-    }
-
-    pub(crate) fn deserialize_dimension_type(&mut self) -> Result<DimensionType, ReadError> {
-        let dim_num = self.read_u8()?;
-        let dim =
-            DimensionType::from_u8(dim_num).ok_or(ReadError::InvalidDimensionType(dim_num))?;
-        self.ctx.initialize_section_count(dim);
-        Ok(dim)
     }
 
     pub(crate) fn deserialize_palette_table(
@@ -304,105 +266,6 @@ impl ReadHandle {
         Ok(tile_entities)
     }
 
-    pub(crate) fn deserialize_segment(
-        &mut self,
-        block_tables: &[Palette],
-        biome_tables: &[Palette],
-    ) -> Result<Arc<Segment>, ReadError> {
-        let sc = self.ctx.section_count;
-        let mut segment = Segment::with_section_count(sc);
-
-        let (block_storage, block_ranges) =
-            self.read_section_group::<SECTION_SIZE_BLOCKS>(sc, block_tables)?;
-        for (slot, r) in segment.block_sections.sections[..sc]
-            .iter_mut()
-            .zip(block_ranges)
-        {
-            *slot = PackedDeltaData::from_shared(Arc::clone(&block_storage), r);
-        }
-        let (biome_storage, biome_ranges) =
-            self.read_section_group::<SECTION_SIZE_BIOMES>(sc, biome_tables)?;
-        for (slot, r) in segment.biome_sections.sections[..sc]
-            .iter_mut()
-            .zip(biome_ranges)
-        {
-            *slot = PackedDeltaData::from_shared(Arc::clone(&biome_storage), r);
-        }
-
-        segment.info = self.deserialize_segment_info()?;
-        segment.tile_entities = self.deserialize_tile_entities()?;
-        Ok(Arc::new(segment))
-    }
-
-    pub(crate) fn deserialize_region(&mut self, region: &mut Region) -> Result<(), ReadError> {
-        let mut block_table = Vec::new();
-        let mut biome_table = Vec::new();
-
-        self.deserialize_palette_table(&mut block_table)?;
-        self.deserialize_palette_table(&mut biome_table)?;
-
-        for segment in region.segments.iter_mut() {
-            let indicator = self.read_u8()?;
-            if indicator != 0 {
-                *segment = Some(self.deserialize_segment(&block_table, &biome_table)?);
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn deserialize_file(&mut self) -> Result<File, ReadError> {
-        self.validate_file_prefix(EXTENSION)?;
-        let version = self.deserialize_version(ZVCR3D_LATEST_VERSION)?;
-        let dimension_type = self.deserialize_dimension_type()?;
-        let protocol_version = self.read_u16()?;
-
-        self.ctx.protocol_version = protocol_version;
-
-        let compressed_slice = &self.data[self.pos..];
-        let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
-
-        let mut region_handle =
-            ReadHandle::new(PooledBytes::from_vec(uncompressed), self.max_deltas);
-        region_handle.ctx = self.ctx.clone();
-
-        let mut file = File {
-            version,
-            protocol_version,
-            dimension_type,
-            region: Region::new(protocol_version),
-        };
-
-        region_handle.deserialize_region(&mut file.region)?;
-        Ok(file)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn deserialize_to_region_data(&mut self) -> Result<RegionData, ReadError> {
-        self.validate_file_prefix(EXTENSION)?;
-        let version = self.deserialize_version(ZVCR3D_LATEST_VERSION)?;
-        let dimension_type = self.deserialize_dimension_type()?;
-        let protocol_version = self.read_u16()?;
-
-        self.ctx.protocol_version = protocol_version;
-
-        let compressed_slice = &self.data[self.pos..];
-        let uncompressed = decompress_zstd(compressed_slice).map_err(ReadError::Zstd)?;
-
-        let mut region_handle =
-            ReadHandle::new(PooledBytes::from_vec(uncompressed), self.max_deltas);
-        region_handle.ctx = self.ctx.clone();
-
-        let mut rd = RegionData {
-            version,
-            protocol_version,
-            dimension: dimension_type,
-            segments: std::array::from_fn(|_| None),
-        };
-
-        region_handle.deserialize_region_data(&mut rd)?;
-        Ok(rd)
-    }
-
     pub(crate) fn deserialize_region_data(&mut self, rd: &mut RegionData) -> Result<(), ReadError> {
         let mut block_table = Vec::new();
         let mut biome_table = Vec::new();
@@ -450,20 +313,4 @@ impl ReadHandle {
             tile_entities,
         })
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn read_file(filepath: &Path, max_deltas: usize) -> Result<File, ReadError> {
-    let buffer = fs::read(filepath).map_err(|e| ReadError::FileNotFound(e.to_string()))?;
-    let mut handle = ReadHandle::new(PooledBytes::from_vec(buffer), max_deltas);
-    handle.deserialize_file()
-}
-
-#[allow(dead_code)]
-pub(crate) fn read_file_at(
-    parent_directory: &Path,
-    location: &RegionLocation,
-    max_deltas: usize,
-) -> Result<File, ReadError> {
-    read_file(&location.file_path(parent_directory), max_deltas)
 }

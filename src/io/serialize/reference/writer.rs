@@ -1,6 +1,6 @@
 use super::File;
 use crate::io::compression::*;
-use crate::io::file_location::{EXTENSION, RegionLocation};
+use crate::io::file_location::EXTENSION;
 use crate::io::serialize::context::Context;
 use crate::io::serialize::primitives::*;
 use crate::region::delta::PackedDeltaData;
@@ -10,8 +10,6 @@ use crate::region::segment::*;
 use crate::region::segment_info::*;
 use crate::region::tile_entities::*;
 use ahash::AHashMap;
-use std::fs;
-use std::path::Path;
 
 pub(crate) type PaletteTable = AHashMap<Palette, usize>;
 
@@ -198,32 +196,4 @@ pub(crate) fn serialize_file_to_vec(
     let mut handle = WriteHandle::new(file.protocol_version, compression_level);
     handle.serialize_file(file)?;
     Ok(handle.data)
-}
-
-#[allow(dead_code)]
-pub(crate) fn write_file(
-    file: &File,
-    filepath: &Path,
-    compression_level: i32,
-) -> Result<usize, String> {
-    let bytes = serialize_file_to_vec(file, compression_level)?;
-    fs::write(filepath, &bytes).map_err(|e| format!("Failed to write file to disk: {e}"))?;
-    Ok(bytes.len())
-}
-
-#[allow(dead_code)]
-pub(crate) fn write_file_at(
-    file: &File,
-    parent_directory: &Path,
-    location: &RegionLocation,
-    compression_level: i32,
-) -> Result<usize, String> {
-    let target_dir = location.directory(parent_directory);
-    fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directories: {e}"))?;
-
-    write_file(
-        file,
-        &location.file_path(parent_directory),
-        compression_level,
-    )
 }

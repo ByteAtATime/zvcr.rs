@@ -38,17 +38,3 @@ pub fn decode_region(path: &Path) -> Result<RegionData, String> {
         .from_bytes(&bytes)
         .map_err(|e| format!("failed to decode {path:?}: {e}"))
 }
-
-#[allow(dead_code)]
-pub fn first_snapshot_voxels(data: &RegionData) -> Vec<u16> {
-    let mut voxels = Vec::new();
-    for segment in data.segments.iter().flatten() {
-        for section in &segment.block_sections {
-            let snapshots = section.snapshots();
-            if let Some(first) = snapshots.first() {
-                voxels.extend_from_slice(&first.data.unpack());
-            }
-        }
-    }
-    voxels
-}

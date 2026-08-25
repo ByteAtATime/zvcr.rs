@@ -112,7 +112,6 @@ impl Writer for ReferenceWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::reader::read_file_at;
     use super::*;
     use crate::dimension::DimensionType;
     use crate::io::compression::ZSTD_COMPRESSION_LEVEL_DEFAULT;
@@ -128,10 +127,11 @@ mod tests {
             rz: 0,
             dimension_type: DimensionType::Overworld,
         };
-        let file = read_file_at(dir, &location, 0).unwrap();
+        let bytes = std::fs::read(location.file_path(dir)).unwrap();
+        let rd = ReferenceReader::new(0).from_bytes(&bytes).unwrap();
 
-        for segment in file.region.segments.iter().flatten() {
-            for section in segment.block_sections.active() {
+        for segment in rd.segments.iter().flatten() {
+            for section in &segment.block_sections {
                 let history = reconstruct_history(section);
                 for (i, snapshot) in history.iter().enumerate() {
                     let expected = section
@@ -141,7 +141,7 @@ mod tests {
                 }
             }
 
-            for section in segment.biome_sections.active() {
+            for section in &segment.biome_sections {
                 let history = reconstruct_history(section);
                 for (i, snapshot) in history.iter().enumerate() {
                     let expected = section
