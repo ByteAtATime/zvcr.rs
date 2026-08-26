@@ -1,12 +1,11 @@
 const RANGE_BITS: u32 = 12;
-const RANGE_MASK: u32 = (1 << RANGE_BITS) - 1;
 const TOP_BYTE: u32 = 0xff00_0000;
 
 #[inline]
 fn midpoint(low: u32, high: u32, prob: u32) -> u32 {
-    let prob = prob.clamp(1, 4094);
-    let range = high - low;
-    low + (range >> RANGE_BITS) * prob + (((range & RANGE_MASK) * prob) >> RANGE_BITS)
+    let prob = prob.clamp(1, 4094) as u64;
+    let range = (high - low) as u64;
+    low + ((range * prob) >> RANGE_BITS) as u32
 }
 
 #[inline]
