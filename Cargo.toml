@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/zvcr", "crates/zvcr_bench"]
+members = ["crates/zvcr", "crates/zvcr_bench", "crates/zvcr_cli"]
 resolver = "3"
 
 [workspace.dependencies]

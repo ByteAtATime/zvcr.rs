@@ -881,3 +881,11 @@ dependencies = [
  "clap",
  "zvcr",
 ]
+
+[[package]]
+name = "zvcr_cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "zvcr",
+]
