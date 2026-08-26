@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fastnbt::{ByteArray, LongArray, Value};
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use rayon::prelude::*;
 
 use zvcr::bench::discover::discover;
 use zvcr::definitions::REGION_SIDELENGTH_SEGMENTS;
@@ -24,6 +23,7 @@ use zvcr::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS};
 use crate::anvil::AnvilRegionWriter;
 use crate::nbt;
 use crate::packing;
+use crate::progress::{Outcome, Written};
 use crate::registry::MinecraftRegistry;
 
 const SECTION_SIZE_LIGHT: usize = 2048;
@@ -237,22 +237,37 @@ fn export_file(
     reg769: &MinecraftRegistry,
     out_dir: &Path,
     epoch: i64,
-) -> Result<(), String> {
-    let location = RegionLocation::from_file_name(dim, path)
-        .ok_or_else(|| format!("unrecognized region filename: {}", path.display()))?;
+) -> Outcome {
+    let fail = |message: String| Outcome::Failed(message);
+    let location = match RegionLocation::from_file_name(dim, path) {
+        Some(location) => location,
+        None => return fail(format!("unrecognized region filename: {}", path.display())),
+    };
 
-    let region_data = ExperimentalReader::new()
-        .read(path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let rx = location.rx;
+    let rz = location.rz;
+    let out_path = out_dir
+        .join(region_subdir(dim))
+        .join(format!("r.{rx}.{rz}.mca"));
+    if out_path.exists() {
+        return Outcome::Skipped;
+    }
+
+    let bytes_in = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+    let region_data = match ExperimentalReader::new().read(path) {
+        Ok(data) => data,
+        Err(e) => return fail(format!("failed to read {}: {e}", path.display())),
+    };
 
     if !MinecraftRegistry::supports(region_data.protocol_version) {
-        return Err(format!(
+        return fail(format!(
             "unsupported protocol version: {}",
             region_data.protocol_version
         ));
     }
     if region_data.dimension != dim {
-        return Err(format!(
+        return fail(format!(
             "dimension mismatch in {}: file is {:?}, expected {:?}",
             path.display(),
             region_data.dimension,
@@ -263,11 +278,9 @@ fn export_file(
     let registry = match region_data.protocol_version {
         765 => reg765,
         769 => reg769,
-        other => return Err(format!("unsupported protocol version: {other}")),
+        other => return fail(format!("unsupported protocol version: {other}")),
     };
 
-    let rx = location.rx;
-    let rz = location.rz;
     let min_section_y = dim.min_section_y();
     let light_template: Vec<i8> = vec![-1; SECTION_SIZE_LIGHT];
 
@@ -303,7 +316,10 @@ fn export_file(
 
             let mut te_compounds: Vec<Value> = Vec::new();
             for te in &tile_entities {
-                te_compounds.push(tile_entity_value(te, registry, min_section_y)?);
+                match tile_entity_value(te, registry, min_section_y) {
+                    Ok(value) => te_compounds.push(value),
+                    Err(e) => return fail(e),
+                }
             }
 
             let mut section_compounds = Vec::with_capacity(block_snaps.len());
@@ -330,33 +346,54 @@ fn export_file(
                 section_compounds,
             );
 
-            let chunk_bytes = nbt::root_compound_to_bytes(&chunk)
-                .map_err(|e| format!("failed to serialize chunk nbt in {}: {e}", path.display()))?;
+            let chunk_bytes = match nbt::root_compound_to_bytes(&chunk) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return fail(format!(
+                        "failed to serialize chunk nbt in {}: {e}",
+                        path.display()
+                    ));
+                }
+            };
 
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(&chunk_bytes).map_err(|e| e.to_string())?;
-            let compressed = encoder.finish().map_err(|e| e.to_string())?;
+            if let Err(e) = encoder.write_all(&chunk_bytes) {
+                return fail(e.to_string());
+            }
+            let compressed = match encoder.finish() {
+                Ok(compressed) => compressed,
+                Err(e) => return fail(e.to_string()),
+            };
 
-            writer.write_chunk(x, z, mca_ts, &compressed).map_err(|e| {
-                format!("failed to stage chunk ({x},{z}) in {}: {e}", path.display())
-            })?;
+            match writer.write_chunk(x, z, mca_ts, &compressed) {
+                Ok(()) => {}
+                Err(e) => {
+                    return fail(format!(
+                        "failed to stage chunk ({x},{z}) in {}: {e}",
+                        path.display()
+                    ));
+                }
+            }
         }
     }
 
-    let bytes = writer
-        .finish()
-        .map_err(|e| format!("failed to assemble region {}: {e}", path.display()))?;
+    let bytes = match writer.finish() {
+        Ok(bytes) => bytes,
+        Err(e) => return fail(format!("failed to assemble region {}: {e}", path.display())),
+    };
 
-    let out_path = out_dir
-        .join(region_subdir(dim))
-        .join(format!("r.{rx}.{rz}.mca"));
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    if let Some(parent) = out_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return fail(format!("failed to create {}: {e}", parent.display()));
     }
-    std::fs::write(&out_path, &bytes)
-        .map_err(|e| format!("failed to write {}: {e}", out_path.display()))?;
-    Ok(())
+    if let Err(e) = std::fs::write(&out_path, &bytes) {
+        return fail(format!("failed to write {}: {e}", out_path.display()));
+    }
+    Outcome::Written(Written {
+        bytes_in,
+        bytes_out: bytes.len() as u64,
+    })
 }
 
 pub fn run_export(
@@ -397,31 +434,7 @@ pub fn run_export(
         return ExitCode::FAILURE;
     }
 
-    let results: Vec<(PathBuf, Result<(), String>)> = sources
-        .par_iter()
-        .map(|path| {
-            let res = export_file(path, dim, &reg765, &reg769, out_dir, epoch);
-            (path.clone(), res)
-        })
-        .collect();
-
-    let mut ok = 0usize;
-    for (path, res) in &results {
-        match res {
-            Ok(()) => ok += 1,
-            Err(e) => eprintln!("failed to export {}: {e}", path.display()),
-        }
-    }
-
-    println!(
-        "exported {ok}/{} region files to {}",
-        results.len(),
-        out_dir.display()
-    );
-
-    if ok == results.len() && ok > 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
+    crate::progress::run_all("export", "export", &sources, |path| {
+        export_file(path, dim, &reg765, &reg769, out_dir, epoch)
+    })
 }
