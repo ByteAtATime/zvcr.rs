@@ -24,12 +24,11 @@ fn main() -> ExitCode {
 }
 
 fn run_convert(input: &Path, output: &Path) -> ExitCode {
-    if let Some(parent) = output.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
+    if let Some(parent) = output.parent()
+        && let Err(error) = std::fs::create_dir_all(parent) {
             eprintln!("Failed to create output directory {}: {error}", parent.display());
             return ExitCode::FAILURE;
         }
-    }
 
     let data = match ReferenceReader::new(0).read(input) {
         Ok(data) => data,
