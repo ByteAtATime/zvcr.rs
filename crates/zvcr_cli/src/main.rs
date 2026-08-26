@@ -23,8 +23,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "Convert an old zvcr file to the new zvcr.rs format")]
-    Convert {
+    #[command(about = "Migrate an old zvcr file to the new zvcr.rs format")]
+    Migrate {
         #[arg(
             help = "Path to the old format region file to convert",
             value_name = "INPUT"
@@ -72,7 +72,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Convert { input, output } => run_convert(&input, &output),
+        Command::Migrate { input, output } => run_migrate(&input, &output),
         Command::Export {
             dim,
             in_dir,
@@ -82,7 +82,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_convert(input: &Path, output: &Path) -> ExitCode {
+fn run_migrate(input: &Path, output: &Path) -> ExitCode {
     if let Some(parent) = output.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
@@ -110,7 +110,7 @@ fn run_convert(input: &Path, output: &Path) -> ExitCode {
     };
 
     println!(
-        "converted {} -> {} ({} bytes)",
+        "migrated {} -> {} ({} bytes)",
         input.display(),
         output.display(),
         bytes
