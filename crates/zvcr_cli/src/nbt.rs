@@ -1,8 +1,8 @@
 use fastnbt::Value;
 
 pub fn payload_from_bytes(bytes: &[u8]) -> Result<Value, String> {
-    if bytes.is_empty() {
-        return Err("payload is empty".to_string());
+    if bytes.is_empty() || bytes[0] == 0x00 {
+        return Ok(Value::Compound(std::collections::HashMap::new()));
     }
     let mut buffer = Vec::with_capacity(bytes.len() + 2);
     buffer.push(bytes[0]);
