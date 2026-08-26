@@ -51,10 +51,22 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
     let block_tags = meta::read_delta_tags(&mut cursor, &block_counts, &block_descriptors)?;
     let biome_tags = meta::read_delta_tags(&mut cursor, &biome_counts, &biome_descriptors)?;
     let model_length = cursor.read_u32()? as usize;
-    let model_payload = cursor.take_slice(model_length)?;
-    let (block_grid, block_ranked, block_uniforms) =
-        context::decode_grid(&model_payload, section_count)
-            .map_err(|e| ReadError::Generic(format!("block model decode failed: {e}")))?;
+    let modeled_parts = if model_length == 0 {
+        None
+    } else {
+        let model_payload = cursor.take_slice(model_length)?;
+        let (block_grid, block_ranked, block_uniforms) =
+            context::decode_grid(&model_payload, section_count)
+                .map_err(|e| ReadError::Generic(format!("block model decode failed: {e}")))?;
+        Some((block_grid, block_ranked, block_uniforms))
+    };
+    let modeled_view = modeled_parts.as_ref().map(|(grid, remap, uniforms)| {
+        sweeps::ModeledGrid {
+            grid,
+            remap,
+            uniforms,
+        }
+    });
     let block_palette = meta::read_palette(&mut cursor)?;
     let biome_palette = meta::read_palette(&mut cursor)?;
 
@@ -64,14 +76,26 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
 
     let block_timestamps = meta::read_timestamps(&mut cursor, total_block_snapshots)?;
     let biome_timestamps = meta::read_timestamps(&mut cursor, total_biome_snapshots)?;
-    let block_singles = meta::read_singles(&mut cursor, delta_kind_count(&block_tags, 1))?;
+    let block_modeled = modeled_parts.is_some();
+    let block_singles = meta::read_singles(
+        &mut cursor,
+        if block_modeled {
+            delta_kind_count(&block_tags, 1)
+        } else {
+            kind_count(&block_descriptors, &block_tags, 1)
+        },
+    )?;
     let biome_singles =
         meta::read_singles(&mut cursor, kind_count(&biome_descriptors, &biome_tags, 1))?;
 
     let mut sizes = [0usize; BUCKETS];
     let mut probe = ByteCursor::new(cursor.data.clone());
     probe.pos = cursor.pos;
-    let block_paletted = delta_kind_count(&block_tags, 2);
+    let block_paletted = if block_modeled {
+        delta_kind_count(&block_tags, 2)
+    } else {
+        kind_count(&block_descriptors, &block_tags, 2)
+    };
     let biome_paletted = kind_count(&biome_descriptors, &biome_tags, 2);
     prescan::prescan_domain(&mut probe, Domain::Block, block_paletted, &mut sizes)?;
     prescan::prescan_domain(&mut probe, Domain::Biome, biome_paletted, &mut sizes)?;
@@ -100,11 +124,7 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
         },
         &slots,
         &mut storages.block,
-        Some(&sweeps::ModeledGrid {
-            grid: &block_grid,
-            remap: &block_ranked,
-            uniforms: &block_uniforms,
-        }),
+        modeled_view.as_ref(),
     )?;
     sweeps::sweep_domain(
         &mut meta_cursor,

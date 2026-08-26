@@ -11,7 +11,11 @@ use crate::io::serialize::experimental::models::context;
 use crate::io::serialize::primitives::{put_bytes, put_u8, put_u16_le, put_u32_le, put_u64_le};
 use crate::raw::RegionData;
 
-pub(crate) fn serialize_region_data(data: &RegionData, level: i32) -> Result<Vec<u8>, String> {
+pub(crate) fn serialize_region_data(
+    data: &RegionData,
+    level: i32,
+    modeling: bool,
+) -> Result<Vec<u8>, String> {
     let section_count = validate_section_counts(data)?;
     let mut streams = Streams::new();
 
@@ -24,13 +28,20 @@ pub(crate) fn serialize_region_data(data: &RegionData, level: i32) -> Result<Vec
     put_bytes(&mut streams.metadata, &presence);
 
     descriptors::write(&mut streams, data, section_count)?;
-    let model = context::encode_region(data, section_count).map_err(|e| e.to_string())?;
-    put_u32_le(&mut streams.model, model.len() as u32);
-    put_bytes(&mut streams.model, &model);
-    snapshots::write_domain(&mut streams, data, Domain::Block, |segment| {
+    if modeling {
+        let model = context::encode_region(data, section_count).map_err(|e| e.to_string())?;
+        if model.is_empty() {
+            return Err("region model payload unexpectedly empty".to_string());
+        }
+        put_u32_le(&mut streams.model, model.len() as u32);
+        put_bytes(&mut streams.model, &model);
+    } else {
+        put_u32_le(&mut streams.model, 0);
+    }
+    snapshots::write_domain(&mut streams, data, Domain::Block, modeling, |segment| {
         &segment.block_sections
     })?;
-    snapshots::write_domain(&mut streams, data, Domain::Biome, |segment| {
+    snapshots::write_domain(&mut streams, data, Domain::Biome, false, |segment| {
         &segment.biome_sections
     })?;
     write_states(&mut streams.chunk_info, data)?;

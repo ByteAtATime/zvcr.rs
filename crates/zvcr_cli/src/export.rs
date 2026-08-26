@@ -12,8 +12,6 @@ use zvcr::bench::discover::discover;
 use zvcr::definitions::REGION_SIDELENGTH_SEGMENTS;
 use zvcr::dimension::DimensionType;
 use zvcr::io::file_location::RegionLocation;
-use zvcr::io::serialize::experimental::ExperimentalReader;
-use zvcr::io::serialize::types::Reader;
 use zvcr::raw::SegmentData;
 use zvcr::region::delta_sequence::DeltaSequence;
 use zvcr::region::tile_entities::TileEntity;
@@ -237,6 +235,7 @@ fn export_file(
     reg769: &MinecraftRegistry,
     out_dir: &Path,
     epoch: i64,
+    format: crate::Format,
 ) -> Outcome {
     let fail = |message: String| Outcome::Failed(message);
     let location = match RegionLocation::from_file_name(dim, path) {
@@ -255,7 +254,7 @@ fn export_file(
 
     let bytes_in = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
-    let region_data = match ExperimentalReader::new().read(path) {
+    let region_data = match format.reader().read(path) {
         Ok(data) => data,
         Err(e) => return fail(format!("failed to read {}: {e}", path.display())),
     };
@@ -401,6 +400,7 @@ pub fn run_export(
     in_dir: &Path,
     out_dir: &Path,
     registries_dir: &Path,
+    format: crate::Format,
 ) -> ExitCode {
     let reg765 = match MinecraftRegistry::load(registries_dir, 765) {
         Ok(r) => r,
@@ -435,6 +435,6 @@ pub fn run_export(
     }
 
     crate::progress::run_all("export", "export", &sources, |path| {
-        export_file(path, dim, &reg765, &reg769, out_dir, epoch)
+        export_file(path, dim, &reg765, &reg769, out_dir, epoch, format)
     })
 }

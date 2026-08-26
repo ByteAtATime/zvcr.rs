@@ -23,21 +23,22 @@ pub(super) fn write_domain<const UNPACKED_SIZE: usize>(
     streams: &mut Streams,
     data: &RegionData,
     domain: Domain,
+    modeled: bool,
     sections: fn(&SegmentData) -> &[PackedDeltaData<UNPACKED_SIZE>],
 ) -> Result<(), String> {
     GLOBAL_LUT
-        .with(|cell| write_domain_streams(streams, data, domain, sections, &mut cell.borrow_mut()))
+        .with(|cell| write_domain_streams(streams, data, domain, modeled, sections, &mut cell.borrow_mut()))
 }
 
 fn write_domain_streams<const UNPACKED_SIZE: usize>(
     streams: &mut Streams,
     data: &RegionData,
     domain: Domain,
+    modeled: bool,
     sections: fn(&SegmentData) -> &[PackedDeltaData<UNPACKED_SIZE>],
     lut: &mut [u32; ATOM_COUNT],
 ) -> Result<(), String> {
     lut.fill(u32::MAX);
-    let modeled = domain == Domain::Block;
     for segment in data.segments.iter().flatten() {
         for section in sections(segment) {
             for (level, snapshot) in section.snapshots().iter().enumerate() {

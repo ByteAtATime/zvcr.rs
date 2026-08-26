@@ -46,7 +46,25 @@ impl ExperimentalWriter {
 
 impl Writer for ExperimentalWriter {
     fn to_bytes(&self, data: &RegionData) -> Result<Vec<u8>, String> {
-        serialize_region_data(data, self.level)
+        serialize_region_data(data, self.level, true)
+    }
+}
+
+pub type RawReader = ExperimentalReader;
+
+pub struct RawWriter {
+    level: i32,
+}
+
+impl RawWriter {
+    pub fn new(level: i32) -> Self {
+        Self { level }
+    }
+}
+
+impl Writer for RawWriter {
+    fn to_bytes(&self, data: &RegionData) -> Result<Vec<u8>, String> {
+        serialize_region_data(data, self.level, false)
     }
 }
 
@@ -114,6 +132,20 @@ mod tests {
     fn roundtrip_preserves_region_data() {
         let region_data = read_reference_region_data();
         let bytes = ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT)
+            .to_bytes(&region_data)
+            .unwrap();
+        let decoded = ExperimentalReader::new().from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.version, Version::default());
+        assert_eq!(region_data.protocol_version, decoded.protocol_version);
+        assert_eq!(region_data.dimension, decoded.dimension);
+        assert!(semantically_equal(&region_data, &decoded));
+    }
+
+    #[test]
+    fn roundtrip_raw_preserves_region_data() {
+        let region_data = read_reference_region_data();
+        let bytes = RawWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT)
             .to_bytes(&region_data)
             .unwrap();
         let decoded = ExperimentalReader::new().from_bytes(&bytes).unwrap();

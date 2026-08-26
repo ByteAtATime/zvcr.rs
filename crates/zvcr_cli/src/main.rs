@@ -1,9 +1,12 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::Path;
 use std::process::ExitCode;
 use zvcr::bench::discover::discover;
 use zvcr::io::serialize::types::{Reader, Writer};
-use zvcr::{ExperimentalWriter, ReferenceReader, ZSTD_COMPRESSION_LEVEL_DEFAULT};
+use zvcr::{
+    ExperimentalReader, ExperimentalWriter, RawReader, RawWriter, ReferenceReader,
+    ZSTD_COMPRESSION_LEVEL_DEFAULT,
+};
 
 mod anvil;
 mod export;
@@ -11,6 +14,30 @@ mod nbt;
 mod packing;
 mod progress;
 mod registry;
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Format {
+    Experimental,
+    Raw,
+}
+
+impl Format {
+    fn writer(self) -> Box<dyn Writer> {
+        match self {
+            Format::Experimental => Box::new(ExperimentalWriter::new(
+                ZSTD_COMPRESSION_LEVEL_DEFAULT,
+            )),
+            Format::Raw => Box::new(RawWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT)),
+        }
+    }
+
+    fn reader(self) -> Box<dyn Reader> {
+        match self {
+            Format::Experimental => Box::new(ExperimentalReader::new()),
+            Format::Raw => Box::new(RawReader::new()),
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -31,6 +58,13 @@ enum Command {
         input: std::path::PathBuf,
         #[arg(help = "Output file or directory path")]
         output: std::path::PathBuf,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = Format::Experimental,
+            help = "Target serialization format"
+        )]
+        format: Format,
     },
     #[command(about = "Export zvcr.rs region files to Minecraft Anvil (.mca) region files")]
     Export {
@@ -58,36 +92,48 @@ enum Command {
             help = "Directory containing the Minecraft registry JSON files"
         )]
         registries: std::path::PathBuf,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = Format::Experimental,
+            help = "Serialization format of the input region files"
+        )]
+        format: Format,
     },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Migrate { input, output } => run_migrate(&input, &output),
+        Command::Migrate {
+            input,
+            output,
+            format,
+        } => run_migrate(&input, &output, format),
         Command::Export {
             dim,
             in_dir,
             out_dir,
             registries,
-        } => export::run_export(dim, &in_dir, &out_dir, &registries),
+            format,
+        } => export::run_export(dim, &in_dir, &out_dir, &registries, format),
     }
 }
 
-fn run_migrate(input: &Path, output: &Path) -> ExitCode {
+fn run_migrate(input: &Path, output: &Path, format: Format) -> ExitCode {
     if !input.exists() {
         eprintln!("input path does not exist: {}", input.display());
         return ExitCode::FAILURE;
     }
 
     if input.is_dir() {
-        run_migrate_dir(input, output)
+        run_migrate_dir(input, output, format)
     } else {
-        run_migrate_file(input, output)
+        run_migrate_file(input, output, format)
     }
 }
 
-fn run_migrate_file(input: &Path, output: &Path) -> ExitCode {
+fn run_migrate_file(input: &Path, output: &Path, format: Format) -> ExitCode {
     if let Some(parent) = output.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
@@ -106,7 +152,7 @@ fn run_migrate_file(input: &Path, output: &Path) -> ExitCode {
         }
     };
 
-    let bytes = match ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT).write(&data, output) {
+    let bytes = match format.writer().write(&data, output) {
         Ok(bytes) => bytes,
         Err(error) => {
             eprintln!("failed to write {}: {error}", output.display());
@@ -123,7 +169,12 @@ fn run_migrate_file(input: &Path, output: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn migrate_one(input_root: &Path, output_root: &Path, file: &Path) -> progress::Outcome {
+fn migrate_one(
+    input_root: &Path,
+    output_root: &Path,
+    file: &Path,
+    format: Format,
+) -> progress::Outcome {
     let relative = match file.strip_prefix(input_root) {
         Ok(relative) => relative,
         Err(_) => return progress::Outcome::Failed(format!("unresolved path: {}", file.display())),
@@ -154,7 +205,7 @@ fn migrate_one(input_root: &Path, output_root: &Path, file: &Path) -> progress::
         }
     };
 
-    match ExperimentalWriter::new(ZSTD_COMPRESSION_LEVEL_DEFAULT).write(&data, &out) {
+    match format.writer().write(&data, &out) {
         Ok(bytes) => progress::Outcome::Written(progress::Written {
             bytes_in,
             bytes_out: bytes as u64,
@@ -165,7 +216,7 @@ fn migrate_one(input_root: &Path, output_root: &Path, file: &Path) -> progress::
     }
 }
 
-fn run_migrate_dir(input: &Path, output: &Path) -> ExitCode {
+fn run_migrate_dir(input: &Path, output: &Path, format: Format) -> ExitCode {
     let input_abs = match std::fs::canonicalize(input) {
         Ok(abs) => abs,
         Err(error) => {
@@ -181,6 +232,6 @@ fn run_migrate_dir(input: &Path, output: &Path) -> ExitCode {
     }
 
     progress::run_all("migrate", "migration", &files, |file| {
-        migrate_one(&input_abs, output, file)
+        migrate_one(&input_abs, output, file, format)
     })
 }
