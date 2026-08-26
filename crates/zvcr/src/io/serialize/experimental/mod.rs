@@ -65,7 +65,7 @@ mod tests {
     use crate::version::Version;
 
     fn read_reference_region_data() -> RegionData {
-        let dir = std::path::Path::new("test_files");
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test_files"));
         let location = RegionLocation {
             rx: 0,
             rz: 0,

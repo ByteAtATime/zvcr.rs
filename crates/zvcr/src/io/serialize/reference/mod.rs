@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn reconstruct_history_matches_snapshot_before() {
-        let dir = std::path::Path::new("test_files");
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test_files"));
         let location = RegionLocation {
             rx: 0,
             rz: 0,
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_data() {
-        let dir = std::path::Path::new("test_files");
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test_files"));
         let location = RegionLocation {
             rx: 0,
             rz: 0,

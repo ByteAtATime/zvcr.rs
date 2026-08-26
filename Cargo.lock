@@ -867,10 +867,17 @@ name = "zvcr"
 version = "0.1.0"
 dependencies = [
  "ahash",
- "clap",
  "criterion",
  "inventory",
  "rayon",
  "thiserror",
  "zstd",
+]
+
+[[package]]
+name = "zvcr_bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "zvcr",
 ]

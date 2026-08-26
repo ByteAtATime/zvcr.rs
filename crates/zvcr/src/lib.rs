@@ -1,27 +1,24 @@
-#[cfg(test)]
-use zvcr::*;
+pub mod bench;
+pub mod definitions;
+pub mod dimension;
+pub mod io;
+pub mod raw;
+pub mod region;
+pub mod time_utils;
+pub mod version;
 
-use clap::Parser;
-
-#[derive(Parser)]
-struct Cli {
-    #[arg(long)]
-    no_verify: bool,
-
-    #[arg(long, num_args = 0..=1, default_missing_value = "128")]
-    sample: Option<usize>,
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-    let verify = !cli.no_verify;
-    zvcr::bench::run(std::path::Path::new("test_files"), verify, cli.sample);
-    Ok(())
-}
+pub use definitions::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS};
+pub use dimension::DimensionType;
+pub use io::compression::{ZSTD_COMPRESSION_LEVEL_DEFAULT, default_compression_threads};
+pub use io::file_location::RegionLocation;
+pub use io::serialize::experimental::{ExperimentalReader, ExperimentalWriter};
+pub use io::serialize::reference::{ReferenceReader, ReferenceWriter};
+pub use io::serialize::types::{Reader, Writer};
+pub use region::packed_data::PackedData;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn palette_packing_roundtrip_blocks() {
@@ -45,7 +42,7 @@ mod tests {
 
     #[test]
     fn read_succeeds_with_zero_and_one_max_deltas() {
-        let dir = std::path::Path::new("test_files");
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test_files"));
         let location = RegionLocation {
             rx: 0,
             rz: 0,
