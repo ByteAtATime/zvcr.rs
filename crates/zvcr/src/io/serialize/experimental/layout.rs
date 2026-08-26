@@ -10,6 +10,7 @@ pub(crate) enum FormatVersion {
 }
 
 impl FormatVersion {
+    #[allow(clippy::wrong_self_convention)]
     pub(crate) fn as_u8(self) -> u8 {
         self as u8
     }
