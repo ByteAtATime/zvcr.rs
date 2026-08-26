@@ -9,9 +9,10 @@ use crate::definitions::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS, SEGMENTS_PER_
 use crate::dimension::DimensionType;
 use crate::io::buffer::PooledBytes;
 use crate::io::compression::decompress_zstd;
-use crate::io::file_location::EXTENSION;
 use crate::io::serialize::error::ReadError;
-use crate::io::serialize::experimental::layout::{self, BUCKETS, Domain, HEADER_LENGTH};
+use crate::io::serialize::experimental::layout::{
+    self, BUCKETS, Domain, FormatVersion, HEADER_LENGTH, MAGIC,
+};
 use crate::io::serialize::experimental::models::context;
 use crate::io::serialize::primitives::ByteCursor;
 use crate::raw::{RegionData, SegmentData};
@@ -21,12 +22,13 @@ use crate::version::Version;
 
 pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadError> {
     let mut header = ByteCursor::new(PooledBytes::from_vec(bytes.to_vec()));
-    let magic = header.take_slice(EXTENSION.len())?;
-    if &magic[..] != EXTENSION.as_bytes() {
+    let magic = header.take_slice(MAGIC.len())?;
+    if &magic[..] != MAGIC.as_bytes() {
         return Err(ReadError::HeaderMismatch);
     }
     let version_u8 = header.read_u8()?;
-    let version = Version::from_u8(version_u8).ok_or(ReadError::InvalidVersion(version_u8))?;
+    let _format_version = FormatVersion::from_u8(version_u8)
+        .ok_or(ReadError::FormatVersionMismatch(version_u8))?;
     let dimension_u8 = header.read_u8()?;
     let dimension = DimensionType::from_u8(dimension_u8)
         .ok_or(ReadError::InvalidDimensionType(dimension_u8))?;
@@ -169,7 +171,7 @@ pub(crate) fn deserialize_region_data(bytes: &[u8]) -> Result<RegionData, ReadEr
     }
 
     Ok(RegionData {
-        version,
+        version: Version::default(),
         protocol_version,
         dimension,
         segments,

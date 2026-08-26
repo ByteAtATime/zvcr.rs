@@ -4,9 +4,8 @@ mod stats;
 mod tile_entities;
 
 use crate::io::compression::compress_zstd_parts;
-use crate::io::file_location::EXTENSION;
 use crate::io::serialize::experimental::layout::{
-    self, BUCKETS, Domain, PART_COUNT, PRESENCE_BYTES,
+    self, BUCKETS, Domain, FormatVersion, MAGIC, PART_COUNT, PRESENCE_BYTES,
 };
 use crate::io::serialize::experimental::models::context;
 use crate::io::serialize::primitives::{put_bytes, put_u8, put_u16_le, put_u32_le, put_u64_le};
@@ -38,8 +37,8 @@ pub(crate) fn serialize_region_data(data: &RegionData, level: i32) -> Result<Vec
     tile_entities::write(&mut streams, data)?;
 
     let mut out = Vec::with_capacity(layout::HEADER_LENGTH);
-    put_bytes(&mut out, EXTENSION.as_bytes());
-    put_u8(&mut out, data.version as u8);
+    put_bytes(&mut out, MAGIC.as_bytes());
+    put_u8(&mut out, FormatVersion::V0_0_1.as_u8());
     put_u8(&mut out, data.dimension as u8);
     put_u16_le(&mut out, data.protocol_version);
     let compressed = compress_zstd_parts(&streams.parts(), level)?;

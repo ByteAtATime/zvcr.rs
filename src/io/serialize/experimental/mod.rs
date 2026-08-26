@@ -118,7 +118,7 @@ mod tests {
             .unwrap();
         let decoded = ExperimentalReader::new().from_bytes(&bytes).unwrap();
 
-        assert_eq!(region_data.version, decoded.version);
+        assert_eq!(decoded.version, Version::default());
         assert_eq!(region_data.protocol_version, decoded.protocol_version);
         assert_eq!(region_data.dimension, decoded.dimension);
         assert!(semantically_equal(&region_data, &decoded));
@@ -175,7 +175,7 @@ mod tests {
             .unwrap();
         let decoded = ExperimentalReader::new().from_bytes(&bytes).unwrap();
 
-        assert_eq!(region_data.version, decoded.version);
+        assert_eq!(decoded.version, Version::default());
         assert_eq!(region_data.protocol_version, decoded.protocol_version);
         assert_eq!(region_data.dimension, decoded.dimension);
         assert!(semantically_equal(&region_data, &decoded));

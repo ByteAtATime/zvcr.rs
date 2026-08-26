@@ -23,6 +23,8 @@ pub enum ReadError {
     InvalidPaletteIndex { index: u32, max: usize },
     #[error("Header prefix mismatch")]
     HeaderMismatch,
+    #[error("Unsupported experimental format version: {0}")]
+    FormatVersionMismatch(u8),
     #[error("Length constraint exceeded: {0}")]
     LengthExceeded(String),
 }

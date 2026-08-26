@@ -1,8 +1,26 @@
 use crate::definitions::{SECTION_SIZE_BIOMES, SECTION_SIZE_BLOCKS, SEGMENTS_PER_REGION};
-use crate::io::file_location::EXTENSION;
 use crate::region::palette::bits_per_entry;
 
-pub(crate) const HEADER_LENGTH: usize = EXTENSION.len() + 4;
+pub(crate) const MAGIC: &str = "zvcrrs";
+pub(crate) const HEADER_LENGTH: usize = MAGIC.len() + 4;
+
+#[repr(u8)]
+pub(crate) enum FormatVersion {
+    V0_0_1 = 1,
+}
+
+impl FormatVersion {
+    pub(crate) fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub(crate) fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::V0_0_1),
+            _ => None,
+        }
+    }
+}
 pub(crate) const PRESENCE_BYTES: usize = SEGMENTS_PER_REGION / 8;
 pub(crate) const PART_COUNT: usize = 17;
 pub(crate) const BUCKETS: usize = 10;
